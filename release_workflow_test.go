@@ -57,6 +57,7 @@ func TestReleaseRetryPreservesTagAndRepository(t *testing.T) {
 			repositoryBound = s.Env["GH_REPO"] == "${{ github.repository }}" &&
 				s.Env["TAG"] == "${{ env.RELEASE_TAG }}" &&
 				strings.Contains(s.Run, "gh release create") &&
+				strings.Contains(s.Run, "--repo \"$GH_REPO\"") &&
 				strings.Contains(s.Run, "--verify-tag") &&
 				!strings.Contains(s.Run, "--clobber")
 		}

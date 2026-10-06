@@ -106,7 +106,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ env.RELEASE_TAG }}
         run: >-
-          gh release create "$TAG" --verify-tag
+          gh release create "$TAG" --repo "$GH_REPO" --verify-tag
           --title "$TAG"
           --notes "Native CLIProxyAPI plugin artifacts built from $TAG. Verify downloads against checksums.txt."
           pkg/*.zip pkg/checksums.txt

@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -293,5 +295,119 @@ func TestResourceRoutesServeAssets(t *testing.T) {
 	}
 	if resp := callManagement(t, manager, http.MethodGet, authResourcePath+"/nope", nil); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown resource status = %d", resp.StatusCode)
+	}
+}
+
+// TestImportKeysAuthListFailureNoWrites verifies a failed credential listing
+// aborts the import with a sanitized 502 and performs no writes, so existing
+// credentials can never be overwritten blind.
+func TestImportKeysAuthListFailureNoWrites(t *testing.T) {
+	host := newFakeHost()
+	host.forcedErrors[pluginabi.MethodHostAuthList] = errors.New("host secret detail")
+	manager := newTestManager(host)
+
+	resp := callManagement(t, manager, http.MethodPost, keysPath, []byte(`{"keys":["sk-secret-value"]}`))
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if saved := host.savedAuths(); len(saved) != 0 {
+		t.Fatalf("a list failure must perform zero saves, got %d", len(saved))
+	}
+	if strings.Contains(string(resp.Body), "secret") || strings.Contains(string(resp.Body), "sk-") {
+		t.Fatalf("list failure leaked host or key text: %s", resp.Body)
+	}
+}
+
+// decodeImportCounts extracts the import result counts from a raw RPC envelope.
+func decodeImportCounts(raw []byte) map[string]int {
+	var env pluginabi.Envelope
+	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
+		return nil
+	}
+	var resp pluginapi.ManagementResponse
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		return nil
+	}
+	var counts map[string]int
+	if err := json.Unmarshal(resp.Body, &counts); err != nil {
+		return nil
+	}
+	return counts
+}
+
+// TestImportKeysConcurrentDuplicateSavesOnce verifies the check-and-save is
+// atomic: two importers submitting the same key start together, yet the host
+// observes exactly one save and one skip, and the importer's metadata is kept.
+func TestImportKeysConcurrentDuplicateSavesOnce(t *testing.T) {
+	host := newFakeHost()
+	// Wrap the callbacks so a successful save is reflected in later list
+	// responses, mirroring the real host's persisted credential state.
+	manager := NewManager(NewBridge(func(method string, payload []byte) ([]byte, error) {
+		raw, err := host.call(method, payload)
+		if err == nil && method == pluginabi.MethodHostAuthSave {
+			var req struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(payload, &req) == nil {
+				host.addAuthFile(pluginapi.HostAuthFileEntry{Name: req.Name, Provider: ProviderID, Type: ProviderID})
+			}
+		}
+		return raw, err
+	}))
+
+	labels := []string{"first", "second"}
+	payloads := make([][]byte, len(labels))
+	for i, label := range labels {
+		body, err := json.Marshal(importRequest{Keys: []string{"sk-dup"}, Label: label})
+		if err != nil {
+			t.Fatalf("encode import body: %v", err)
+		}
+		payloads[i] = mgmtPayload(t, http.MethodPost, keysPath, body)
+	}
+
+	start := make(chan struct{})
+	counts := make([]map[string]int, len(labels))
+	var wg sync.WaitGroup
+	for i := range labels {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			raw, err := manager.HandleCall(pluginabi.MethodManagementHandle, payloads[i])
+			if err != nil {
+				return
+			}
+			counts[i] = decodeImportCounts(raw)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	total := func(field string) int {
+		sum := 0
+		for _, c := range counts {
+			sum += c[field]
+		}
+		return sum
+	}
+	if total("imported") != 1 || total("skipped") != 1 {
+		t.Fatalf("concurrent duplicate import counts = %+v", counts)
+	}
+	saved := host.savedAuths()
+	if len(saved) != 1 {
+		t.Fatalf("duplicate key must be saved exactly once, got %d", len(saved))
+	}
+	var savedObj map[string]any
+	if err := json.Unmarshal(saved[0].JSON, &savedObj); err != nil {
+		t.Fatalf("decode saved auth: %v", err)
+	}
+	winner := ""
+	for i, c := range counts {
+		if c["imported"] == 1 {
+			winner = labels[i]
+		}
+	}
+	if winner == "" || savedObj["label"] != winner {
+		t.Fatalf("saved label %v, want importer label %q", savedObj["label"], winner)
 	}
 }

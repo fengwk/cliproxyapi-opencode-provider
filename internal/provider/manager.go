@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
-	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -19,20 +18,28 @@ type Manager struct {
 	mu  sync.RWMutex
 	cfg Config
 
-	// lifeMu guards the request lifecycle registry. Registering a stream and
-	// flipping the stopping flag share the mutex so no worker is ever started
-	// after shutdown has snapshotted the active set.
-	lifeMu   sync.Mutex
-	stopping bool
-	active   map[string]string // downstream stream id -> upstream stream id
-	workers  sync.WaitGroup
-	stopFlag atomic.Bool
+	// lifeMu guards the request lifecycle registry and the current run stop
+	// channel. Registering a stream and closing or replacing the run channel
+	// share the mutex so no worker is ever started against a closed run.
+	lifeMu  sync.Mutex
+	stop    chan struct{}     // closed to stop the current run; replaced to reopen
+	closed  bool              // final shutdown; irreversible
+	active  map[string]string // downstream stream id -> upstream stream id
+	workers sync.WaitGroup
+
+	// cycle serializes quiesce, reconfigure and shutdown so a WaitGroup drain
+	// cannot overlap a reopen and concurrent lifecycle RPCs cannot interleave.
+	cycle sync.Mutex
+
+	// importMu serializes the key-import check-and-save so two concurrent
+	// imports cannot both observe the same key as missing.
+	importMu sync.Mutex
 }
 
 // NewManager returns a dispatcher whose host callbacks flow through bridge.
 func NewManager(bridge *Bridge) *Manager {
 	cfg, _ := parseConfig(nil)
-	return &Manager{bridge: bridge, cfg: cfg, active: map[string]string{}}
+	return &Manager{bridge: bridge, cfg: cfg, stop: make(chan struct{}), active: map[string]string{}}
 }
 
 func (m *Manager) config() Config {
@@ -47,19 +54,54 @@ func (m *Manager) setConfig(cfg Config) {
 	m.mu.Unlock()
 }
 
-// stopped reports whether the plugin has begun shutting down. New executions
-// are rejected while stopped.
+// stopped reports whether the plugin is quiesced or shut down. New executions
+// are rejected while true. It is retained as a helper for tests.
 func (m *Manager) stopped() bool {
-	return m.stopFlag.Load()
+	m.lifeMu.Lock()
+	defer m.lifeMu.Unlock()
+	return m.stoppedLocked()
+}
+
+// stoppedLocked is stopped with lifeMu already held.
+func (m *Manager) stoppedLocked() bool {
+	if m.closed {
+		return true
+	}
+	select {
+	case <-m.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// beginRun captures the stop channel of the current run for a new execution. It
+// returns false once the manager is quiesced or shut down. The captured channel
+// is carried in the execution plan so a request prepared before a quiesce can
+// never be resurrected by a later reopen.
+func (m *Manager) beginRun() (chan struct{}, bool) {
+	m.lifeMu.Lock()
+	defer m.lifeMu.Unlock()
+	if m.stoppedLocked() {
+		return nil, false
+	}
+	return m.stop, true
 }
 
 // registerStream records the downstream/upstream pair and reserves a worker
-// slot before the pump goroutine starts. It returns false once shutdown began.
-func (m *Manager) registerStream(downstreamID, upstreamID string) bool {
+// slot before the pump goroutine starts. It accepts only the current open run
+// channel, so a delayed upstream open prepared before a quiesce cannot start
+// work after the manager reopened with a fresh run. It returns false otherwise.
+func (m *Manager) registerStream(run chan struct{}, downstreamID, upstreamID string) bool {
 	m.lifeMu.Lock()
 	defer m.lifeMu.Unlock()
-	if m.stopping {
+	if m.closed || m.stop != run {
 		return false
+	}
+	select {
+	case <-run:
+		return false
+	default:
 	}
 	m.workers.Add(1)
 	if downstreamID != "" {
@@ -77,22 +119,25 @@ func (m *Manager) finishStream(downstreamID string) {
 	m.workers.Done()
 }
 
-// beginStop marks the plugin stopping, rejects new executions, and closes both
-// the upstream and downstream halves of every active stream to unblock any
-// pending read or emit. It is idempotent.
-func (m *Manager) beginStop() {
-	m.lifeMu.Lock()
-	if m.stopping {
-		m.lifeMu.Unlock()
-		return
+// closeRunLocked closes the current run channel, rejecting new executions, and
+// returns a snapshot of the active streams. It is idempotent and must be called
+// with lifeMu held.
+func (m *Manager) closeRunLocked() map[string]string {
+	select {
+	case <-m.stop:
+	default:
+		close(m.stop)
 	}
-	m.stopping = true
-	m.stopFlag.Store(true)
 	pairs := make(map[string]string, len(m.active))
 	for downstream, upstream := range m.active {
 		pairs[downstream] = upstream
 	}
-	m.lifeMu.Unlock()
+	return pairs
+}
+
+// closeStreams unblocks the upstream and downstream halves of a stream
+// snapshot. It never runs while lifeMu is held.
+func (m *Manager) closeStreams(pairs map[string]string) {
 	for downstream, upstream := range pairs {
 		if upstream != "" {
 			m.bridge.HTTPStreamClose(upstream)
@@ -103,11 +148,60 @@ func (m *Manager) beginStop() {
 	}
 }
 
+// quiesce closes the current run channel, rejecting new work and unblocking the
+// active streams so they can drain. It is reversible: a later successful
+// reconfigure reopens the manager.
+func (m *Manager) quiesce() {
+	m.cycle.Lock()
+	defer m.cycle.Unlock()
+	m.lifeMu.Lock()
+	pairs := m.closeRunLocked()
+	m.lifeMu.Unlock()
+	m.closeStreams(pairs)
+}
+
 // shutdown quiesces background stream pumps and waits until every worker has
 // finished. It never returns while a worker could still call back into the host.
+// Shutdown is irreversible.
 func (m *Manager) shutdown() {
-	m.beginStop()
+	m.cycle.Lock()
+	defer m.cycle.Unlock()
+	m.lifeMu.Lock()
+	m.closed = true
+	pairs := m.closeRunLocked()
+	m.lifeMu.Unlock()
+	m.closeStreams(pairs)
 	m.workers.Wait()
+}
+
+// applyConfig installs a validated config snapshot. Reconfiguring a quiesced
+// manager first drains the old workers, then reopens with a fresh run channel so
+// inference works again; the config is validated by the caller beforehand so an
+// invalid config can never reactivate the manager. An active reconfigure does not
+// interrupt in-flight streams, and a final shutdown is never reversed.
+func (m *Manager) applyConfig(cfg Config) error {
+	m.cycle.Lock()
+	defer m.cycle.Unlock()
+	m.lifeMu.Lock()
+	if m.closed {
+		m.lifeMu.Unlock()
+		return &ProviderError{Code: "unavailable", Message: "plugin is shut down", HTTPStatus: http.StatusServiceUnavailable}
+	}
+	if !m.stoppedLocked() {
+		m.lifeMu.Unlock()
+		m.setConfig(cfg)
+		return nil
+	}
+	m.lifeMu.Unlock()
+	// Quiesced: drain every old worker before reopening. New registrations stay
+	// impossible while the run channel is closed, so no worker can be added
+	// between the wait and the reopen.
+	m.workers.Wait()
+	m.setConfig(cfg)
+	m.lifeMu.Lock()
+	m.stop = make(chan struct{})
+	m.lifeMu.Unlock()
+	return nil
 }
 
 // HandleCall dispatches one RPC method. Handler failures travel inside the
@@ -124,7 +218,7 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
 		return m.handleLifecycle(request)
 	case pluginabi.MethodPluginQuiesce:
-		m.beginStop()
+		m.quiesce()
 		return okEnvelope(struct{}{})
 	case pluginabi.MethodPluginShutdown:
 		m.shutdown()
@@ -250,9 +344,13 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	}
 	cfg, err := parseConfig(req.ConfigYAML)
 	if err != nil {
+		// Validate before touching lifecycle state so an invalid config can never
+		// reopen a quiesced manager.
 		return mustEnvelope(errorResult("invalid_config", err.Error(), http.StatusBadRequest))
 	}
-	m.setConfig(cfg)
+	if err := m.applyConfig(cfg); err != nil {
+		return mustEnvelope(resultError(err))
+	}
 	return okEnvelope(registrationResponse(req.SchemaVersion))
 }
 

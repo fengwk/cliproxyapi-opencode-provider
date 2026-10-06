@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "cliproxyapi-opencode-provider",
+      "name": "OpenCode Go",
+      "description": "OpenCode Go provider with session isolation and read-only quota queries.",
+      "author": "fengwk",
+      "repository": "https://github.com/fengwk/cliproxyapi-opencode-provider",
+      "license": "MIT",
+      "tags": ["opencode", "provider", "quota"],
+      "install": {
+        "type": "github-release"
+      }
+    }
+  ]
+}

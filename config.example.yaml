@@ -30,6 +30,9 @@ routing:
 plugins:
   enabled: true
   dir: "./plugins"
+  # Add this source, then install OpenCode Go from the CPA plugin store.
+  store-sources:
+    - "https://raw.githubusercontent.com/fengwk/cliproxyapi-opencode-provider/main/registry.json"
   configs:
     cliproxyapi-opencode-provider:
       enabled: true

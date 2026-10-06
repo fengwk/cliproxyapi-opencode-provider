@@ -24,7 +24,29 @@ CLIProxyAPI (CPA) 的 OpenCode Go 原生插件。独立仓库、独立动态库�
 更高 v8 版本由 CI 每日验证，不保证未通过测试的版本或 v9 兼容。
 当前 SDK 固定为 v8.0.16。
 
-### 1. 获取动态库
+### 1. 安装插件
+
+#### 从自定义插件源安装（推荐）
+
+将下面的源合入现有 CPA 配置的 `plugins` 对象：
+
+```yaml
+plugins:
+  enabled: true
+  dir: "./plugins"
+  store-sources:
+    - "https://raw.githubusercontent.com/fengwk/cliproxyapi-opencode-provider/main/registry.json"
+```
+
+保存配置并让 CPA 重载，然后在 **插件商店** 中刷新、搜索 **OpenCode Go** 并点击安装。
+商店会读取最新正式 GitHub Release，下载运行平台对应的 ZIP、验证 `checksums.txt`，
+安装动态库并启用插件。自定义源不替换官方源，也不需要等待官方商店收录。
+安装后在 **插件管理** 确认已注册、已生效；若安装响应要求重启，再重启 CPA。
+
+仅添加 `plugins.configs` 配置不会下载安装文件，只有配置没有动态库时会显示“未注册”。
+CPA 运行环境需要能访问 GitHub Raw、GitHub API 与 Release 下载地址。
+
+#### 手动构建或安装
 
 本地构建需要 Go 1.26+、C 编译器和 Make：
 
@@ -190,6 +212,11 @@ make package                          # 需要 zip，输出 dist/pkg/
 4. 合并后显式触发主分支 CI，重新生成原生 artifacts；不依赖仓库的 Allow auto-merge 设置，
    不自动发布 tag、部署或覆盖正在运行的 CPA。
 5. GitHub Actions 更新每周提 PR，工作流修改与 CPA v9 迁移需要人工确认。
+
+发布流程：将已验证提交打上 `vX.Y.Z` tag 并推送，release 工作流自动构建三个平台、
+打包并发布正式 GitHub Release。当前不会在依赖更新合并后自动打 tag 或发版；
+CI artifacts 不是正式 Release。`registry.json` 不固定版本，新 Release 无需修改插件源。
+发布不等于部署，已安装插件需在 CPA 插件商店中主动更新，不会后台覆盖运行中的动态库。
 
 宿主升级不会更新已经编译进插件的 translator。宿主自己的池化/亲和逻辑可独立升级；
 需要新的 SDK 转换逻辑时安装重新构建的插件，而不是手改转换器。

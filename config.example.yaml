@@ -1,0 +1,44 @@
+# Minimal CLIProxyAPI configuration for the cliproxyapi-opencode-provider plugin.
+# Copy to config.yaml next to the CLIProxyAPI binary and replace every placeholder.
+# Never commit real client keys, upstream keys or management secrets.
+config-version: 8
+server:
+  host: "127.0.0.1"
+  port: 8317
+# Local management API. Remote access stays off and the bundled control panel is
+# disabled; the plugin UI is served from the management/resource routes instead.
+management:
+  allow-remote: false
+  secret-key: "$2a$10$hvj2n7QXEh5f5qY1cyQaz.7LM4bU4X4NiPJhMA/lNMFaphNnCQR22"
+  disable-control-panel: true
+# Keys clients use against this proxy (not OpenCode upstream keys).
+access:
+  api-keys:
+    - "replace-with-client-api-key"
+# CPA owns credential storage. Keys imported through the plugin UI are persisted
+# under auth-dir by the host and are never written to this file or the plugin YAML.
+oauth:
+  auth-dir: "./auths"
+routing:
+  strategy: "round-robin"
+  session-affinity: true
+plugins:
+  enabled: true
+  dir: "./plugins"
+  configs:
+    cliproxyapi-opencode-provider:
+      enabled: true
+# OpenCode Go upstream endpoint.
+      base-url: "https://opencode.ai/zen/go/v1"
+# Optional custom models. protocol is one of: openai, claude, openai-response.
+# models:
+#   - id: "opencode-go-custom"
+#     protocol: "openai"
+
+# Native library location (see `make build` and the release archives):
+#   <plugins.dir>/<goos>/<goarch>/cliproxyapi-opencode-provider.so
+# Install the library as cliproxyapi-opencode-provider.so / .dylib / .dll.
+#
+# Key import UI and endpoint exposed by the plugin:
+#   GET  /v0/resource/plugins/cliproxyapi-opencode-provider/ui
+#   POST /v0/management/plugins/cliproxyapi-opencode-provider/keys

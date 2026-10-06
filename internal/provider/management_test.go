@@ -69,6 +69,49 @@ func TestManagementRegistration(t *testing.T) {
 	}
 }
 
+// TestUIDisplayNameConsistency keeps the management menu and page header aligned
+// with the shared plugin display name while preserving the technical ID and the
+// upstream-facing OpenCode Go labels.
+func TestUIDisplayNameConsistency(t *testing.T) {
+	reg := managementRegistration()
+	var ui *pluginapi.ResourceRoute
+	for i := range reg.Resources {
+		if reg.Resources[i].Path == "/ui" {
+			ui = &reg.Resources[i]
+		}
+	}
+	if ui == nil {
+		t.Fatal("ui resource not registered")
+	}
+	if ui.Menu != PluginName {
+		t.Fatalf("management menu = %q, want plugin display name %q", ui.Menu, PluginName)
+	}
+	if ui.Menu == PluginID {
+		t.Fatalf("management menu must not be the technical ID %q", PluginID)
+	}
+
+	manager := newTestManager(newFakeHost())
+	resp := callManagement(t, manager, http.MethodGet, authResourcePath+"/ui", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	html := string(resp.Body)
+	if !strings.Contains(html, "<title>"+PluginName+" · 密钥与配额管理</title>") {
+		t.Errorf("ui.html title must display %q", PluginName)
+	}
+	if !strings.Contains(html, "<h1>"+PluginName+"</h1>") {
+		t.Errorf("ui.html header must display %q", PluginName)
+	}
+	// The technical ID stays visible as a subtitle and upstream import labels
+	// keep naming the OpenCode Go upstream.
+	if !strings.Contains(html, PluginID) {
+		t.Errorf("ui.html must preserve the technical ID %q", PluginID)
+	}
+	if !strings.Contains(html, "导入 OpenCode Go 密钥") {
+		t.Errorf("ui.html must keep the OpenCode Go upstream key import label")
+	}
+}
+
 // TestListKeysFiltersAndSanitizes verifies only OpenCode credentials are listed
 // and no secret material (key, raw json, path) leaks.
 func TestListKeysFiltersAndSanitizes(t *testing.T) {

@@ -28,6 +28,7 @@ import (
 const (
 	providerID = "opencode-go"
 	pluginID   = "cliproxyapi-opencode-provider"
+	pluginName = "OpenCode Provider"
 
 	clientKey = "fake-client-key"
 	mgmtKey   = "fake-management-password"

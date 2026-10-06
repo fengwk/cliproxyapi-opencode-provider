@@ -38,9 +38,9 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: keysRoute, Description: "Import OpenCode Go API keys."},
 		},
 		Resources: []pluginapi.ResourceRoute{
-			{Path: "/ui", Menu: "OpenCode Go", Description: "OpenCode Go key management."},
-			{Path: "/ui.js", Description: "OpenCode Go key management script."},
-			{Path: "/ui.css", Description: "OpenCode Go key management styles."},
+			{Path: "/ui", Menu: PluginName, Description: PluginName + " key management for the OpenCode Go upstream."},
+			{Path: "/ui.js", Description: PluginName + " key management script."},
+			{Path: "/ui.css", Description: PluginName + " key management styles."},
 		},
 	}
 }

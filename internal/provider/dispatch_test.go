@@ -30,11 +30,19 @@ func TestRegisterNegotiatesSchema(t *testing.T) {
 	if len(reg.Capabilities.ExecutorInputFormats) != 3 || len(reg.Capabilities.ExecutorOutputFormats) != 3 {
 		t.Fatalf("executor formats not fully declared: %+v", reg.Capabilities)
 	}
-	if reg.Metadata.GitHubRepository == "" || reg.Metadata.Name != PluginID {
+	if reg.Metadata.GitHubRepository == "" || reg.Metadata.Name != PluginName {
 		t.Fatalf("invalid metadata: %+v", reg.Metadata)
 	}
 	if reg.Metadata.Version != Version {
 		t.Fatalf("metadata version = %q, want %q", reg.Metadata.Version, Version)
+	}
+	// The display name must be distinct from, and must not degrade, the stable
+	// plugin/provider identifiers that routing and file names depend on.
+	if PluginName == PluginID || PluginName == ProviderID {
+		t.Fatalf("display name collides with a technical ID: %q", PluginName)
+	}
+	if PluginID != "cliproxyapi-opencode-provider" || ProviderID != "opencode-go" {
+		t.Fatalf("stable IDs changed: plugin=%q provider=%q", PluginID, ProviderID)
 	}
 
 	// A lower host schema must not be exceeded.

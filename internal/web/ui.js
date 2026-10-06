@@ -17,6 +17,17 @@ var MAX_BODY_BYTES = 64 * 1024;
 var MAX_LABEL_LENGTH = 128;
 var MAX_CELL_LENGTH = 200;
 var MAX_FILE_NAME_LENGTH = 255;
+var MAX_AUTH_INDEX_LENGTH = 200;
+
+// The three official OpenCode Go quota windows, in a fixed display order.
+var QUOTA_WINDOWS = [
+  { window: "rolling", label: "滚动窗口" },
+  { window: "weekly", label: "每周窗口" },
+  { window: "monthly", label: "每月窗口" }
+];
+
+// Strict RFC3339 timestamp shape, matching the host's time.RFC3339 parsing.
+var ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 var CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
 var CONTROL_CHARS_RE_GLOBAL = /[\u0000-\u001f\u007f]/g;
@@ -62,7 +73,8 @@ function deriveEndpoints(locationLike) {
   return {
     prefix: prefix,
     keysUrl: prefix + "/v0/management/plugins/" + PLUGIN_ID + "/keys",
-    credentialsUrl: prefix + "/v8/management/credentials"
+    credentialsUrl: prefix + "/v8/management/credentials",
+    quotaUrl: prefix + "/v0/management/plugins/" + PLUGIN_ID + "/quota"
   };
 }
 
@@ -201,6 +213,141 @@ function isSafeFileName(name) {
   return value.indexOf("/") === -1 && value.indexOf("\\") === -1;
 }
 
+// A host credential index is only ever placed in a JSON body, but it must still
+// be a bounded, single-line token so a hostile listing cannot smuggle anything.
+function isSafeAuthIndex(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  var trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_AUTH_INDEX_LENGTH) {
+    return false;
+  }
+  if (CONTROL_CHARS_RE.test(trimmed) || WHITESPACE_RE.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+
+// Build the exact read-only quota request body for a validated auth index.
+function buildQuotaPayload(authIndex) {
+  if (!isSafeAuthIndex(authIndex)) {
+    return { ok: false, body: "" };
+  }
+  return { ok: true, body: JSON.stringify({ auth_index: authIndex.trim() }) };
+}
+
+function isValidIsoTimestamp(value) {
+  if (typeof value !== "string" || !ISO_TIMESTAMP_RE.test(value)) {
+    return false;
+  }
+  return isFinite(Date.parse(value));
+}
+
+function pad2(value) {
+  return value < 10 ? "0" + value : String(value);
+}
+
+// Render a validated timestamp deterministically in UTC so the display never
+// depends on the viewer's timezone or echoes an unvalidated server string.
+function formatQuotaReset(value) {
+  var parsed = Date.parse(value);
+  if (!isFinite(parsed)) {
+    return "";
+  }
+  var date = new Date(parsed);
+  return (
+    date.getUTCFullYear() + "-" + pad2(date.getUTCMonth() + 1) + "-" + pad2(date.getUTCDate()) +
+    " " + pad2(date.getUTCHours()) + ":" + pad2(date.getUTCMinutes()) + " UTC"
+  );
+}
+
+function quotaWindowLabel(name) {
+  for (var i = 0; i < QUOTA_WINDOWS.length; i++) {
+    if (QUOTA_WINDOWS[i].window === name) {
+      return QUOTA_WINDOWS[i].label;
+    }
+  }
+  return "";
+}
+
+// Strictly validate the normalized quota response. Any malformed, missing or
+// duplicated window yields ok:false so the caller shows a fixed error and never
+// an inferred value.
+function parseQuotaResponse(payload) {
+  var failure = { ok: false, plan: "", buckets: [] };
+  if (!isPlainObject(payload)) {
+    return failure;
+  }
+  var plan = isPlainObject(payload.subscription) ? toCellText(payload.subscription.plan) : "";
+  if (!plan) {
+    return failure;
+  }
+  var groups = Array.isArray(payload.groups) ? payload.groups : [];
+  var byWindow = {};
+  for (var g = 0; g < groups.length; g++) {
+    var group = groups[g];
+    if (!isPlainObject(group) || !Array.isArray(group.buckets)) {
+      continue;
+    }
+    for (var b = 0; b < group.buckets.length; b++) {
+      var bucket = group.buckets[b];
+      if (!isPlainObject(bucket)) {
+        continue;
+      }
+      var label = quotaWindowLabel(typeof bucket.window === "string" ? bucket.window : "");
+      if (!label) {
+        continue; // unknown windows are ignored, never guessed at
+      }
+      if (Object.prototype.hasOwnProperty.call(byWindow, bucket.window)) {
+        return failure; // duplicate window is ambiguous
+      }
+      var fraction = bucket.remainingFraction;
+      if (typeof fraction !== "number" || !isFinite(fraction) || fraction < 0 || fraction > 1) {
+        return failure;
+      }
+      if (!isValidIsoTimestamp(bucket.resetTime)) {
+        return failure;
+      }
+      var remainingPercent = Math.round(fraction * 100);
+      byWindow[bucket.window] = {
+        window: bucket.window,
+        label: label,
+        remainingFraction: fraction,
+        remainingPercent: remainingPercent,
+        usedPercent: 100 - remainingPercent,
+        resetTime: formatQuotaReset(bucket.resetTime)
+      };
+    }
+  }
+  var buckets = [];
+  for (var w = 0; w < QUOTA_WINDOWS.length; w++) {
+    var entry = byWindow[QUOTA_WINDOWS[w].window];
+    if (!entry) {
+      return failure; // every official window must be present
+    }
+    buckets.push(entry);
+  }
+  return { ok: true, plan: plan, buckets: buckets };
+}
+
+// Fixed, local quota messages: server error strings are never surfaced.
+function describeQuotaFailure(status) {
+  if (status === 400) {
+    return "配额请求无效（400）。";
+  }
+  if (status === 404) {
+    return "配额接口不可用（404），请确认 CPA 与插件版本匹配。";
+  }
+  if (status === 501) {
+    return "当前插件不支持配额查询（501）。";
+  }
+  if (status >= 500) {
+    return "无法获取配额（服务端错误 " + status + "），请稍后重试。";
+  }
+  return "配额查询失败（" + status + "）。";
+}
+
 // Convert non-secret list entries into plain display rows; never carries secrets.
 function normalizeFileEntries(files) {
   if (!Array.isArray(files)) {
@@ -213,6 +360,7 @@ function normalizeFileEntries(files) {
       continue;
     }
     var rawName = typeof entry.name === "string" ? entry.name : "";
+    var rawIndex = typeof entry.auth_index === "string" ? entry.auth_index : "";
     rows.push({
       rawName: rawName,
       name: toCellText(rawName),
@@ -222,7 +370,9 @@ function normalizeFileEntries(files) {
       unavailable: entry.unavailable === true,
       success: toCount(entry.success),
       failed: toCount(entry.failed),
-      deletable: isSafeFileName(rawName)
+      deletable: isSafeFileName(rawName),
+      authIndex: rawIndex,
+      quotaAvailable: isSafeAuthIndex(rawIndex)
     });
   }
   return rows;
@@ -315,6 +465,8 @@ var api = {
   MAX_KEY_LENGTH: MAX_KEY_LENGTH,
   MAX_BODY_BYTES: MAX_BODY_BYTES,
   MAX_LABEL_LENGTH: MAX_LABEL_LENGTH,
+  MAX_AUTH_INDEX_LENGTH: MAX_AUTH_INDEX_LENGTH,
+  QUOTA_WINDOWS: QUOTA_WINDOWS,
   utf8ByteLength: utf8ByteLength,
   deriveEndpoints: deriveEndpoints,
   isSecureUiContext: isSecureUiContext,
@@ -324,8 +476,14 @@ var api = {
   toCellText: toCellText,
   toCount: toCount,
   isSafeFileName: isSafeFileName,
+  isSafeAuthIndex: isSafeAuthIndex,
+  buildQuotaPayload: buildQuotaPayload,
+  isValidIsoTimestamp: isValidIsoTimestamp,
+  formatQuotaReset: formatQuotaReset,
+  parseQuotaResponse: parseQuotaResponse,
   normalizeFileEntries: normalizeFileEntries,
   describeHttpFailure: describeHttpFailure,
+  describeQuotaFailure: describeQuotaFailure,
   countNotice: countNotice,
   formatImportResult: formatImportResult,
   buildManagementRequest: buildManagementRequest
@@ -353,20 +511,43 @@ function initUi() {
     status: doc.getElementById("status"),
     tableWrap: doc.getElementById("table-wrap"),
     filesBody: doc.getElementById("files-body"),
-    insecureWarning: doc.getElementById("insecure-warning")
+    insecureWarning: doc.getElementById("insecure-warning"),
+    quotaStatus: doc.getElementById("quota-status"),
+    quotaPanel: doc.getElementById("quota-panel"),
+    quotaSelection: doc.getElementById("quota-selection"),
+    quotaBody: doc.getElementById("quota-body")
   };
 
-  if (!el.mgmtKey || !el.keys || !el.filesBody || !el.status) {
+  if (!el.mgmtKey || !el.keys || !el.filesBody || !el.status || !el.quotaStatus || !el.quotaBody) {
     return;
   }
 
   var endpoints = deriveEndpoints(window.location);
   var secureContext = false;
   var busy = false;
+  var selectedQuotaName = "";
 
   function setStatus(message, level) {
     el.status.textContent = message;
     el.status.className = "status" + (level ? " " + level : "");
+  }
+
+  function setQuotaStatus(message, level) {
+    el.quotaStatus.textContent = message;
+    el.quotaStatus.className = "status" + (level ? " " + level : "");
+  }
+
+  var QUOTA_IDLE_MESSAGE = "尚未选择密钥。请在“已托管的密钥”列表中点击某个密钥的“查看配额”。";
+
+  // Drop any rendered quota so a stale selection is never shown as current.
+  function clearQuota() {
+    selectedQuotaName = "";
+    el.quotaPanel.hidden = true;
+    el.quotaSelection.textContent = "";
+    while (el.quotaBody.firstChild) {
+      el.quotaBody.removeChild(el.quotaBody.firstChild);
+    }
+    setQuotaStatus(QUOTA_IDLE_MESSAGE, "info");
   }
 
   function setBusy(flag) {
@@ -376,9 +557,14 @@ function initUi() {
     el.importBtn.disabled = disabled;
     el.reloadBtn.disabled = disabled;
     el.importProgress.hidden = !flag;
-    var deleteButtons = el.filesBody.querySelectorAll("button[data-action='delete']");
-    for (var i = 0; i < deleteButtons.length; i++) {
-      deleteButtons[i].disabled = disabled;
+    var actionButtons = el.filesBody.querySelectorAll("button[data-action]");
+    for (var i = 0; i < actionButtons.length; i++) {
+      var blocked = disabled;
+      if (actionButtons[i].getAttribute("data-action") === "quota") {
+        // A quota button stays disabled unless its row has a safe index.
+        blocked = disabled || !isSafeAuthIndex(actionButtons[i].getAttribute("data-auth-index"));
+      }
+      actionButtons[i].disabled = blocked;
     }
   }
 
@@ -388,6 +574,7 @@ function initUi() {
     el.mgmtKey.disabled = !secureContext;
     el.keys.disabled = !secureContext;
     el.label.disabled = !secureContext;
+    clearQuota();
     setBusy(false);
     if (secureContext) {
       setStatus("尚未加载。请输入 CPA 管理密钥并点击“连接并刷新”。", "info");
@@ -425,6 +612,22 @@ function initUi() {
     appendCell(tr, String(row.success));
     appendCell(tr, String(row.failed));
     var actions = doc.createElement("td");
+    actions.className = "cell-actions";
+
+    var quotaLabel = row.quotaAvailable
+      ? "查看密钥 " + toCellText(row.rawName) + " 的配额"
+      : "密钥 " + toCellText(row.rawName) + " 缺少可用的凭据索引，无法查看配额";
+    var quotaButton = doc.createElement("button");
+    quotaButton.type = "button";
+    quotaButton.setAttribute("data-action", "quota");
+    quotaButton.setAttribute("data-auth-index", row.authIndex);
+    quotaButton.setAttribute("data-file-name", row.rawName);
+    quotaButton.textContent = "查看配额";
+    quotaButton.setAttribute("aria-label", quotaLabel);
+    quotaButton.disabled = !row.quotaAvailable || busy || !secureContext;
+    quotaButton.addEventListener("click", onQuotaClick);
+    actions.appendChild(quotaButton);
+
     if (row.deletable) {
       var button = doc.createElement("button");
       button.type = "button";
@@ -436,8 +639,6 @@ function initUi() {
       button.disabled = busy || !secureContext;
       button.addEventListener("click", onDeleteClick);
       actions.appendChild(button);
-    } else {
-      actions.textContent = "—";
     }
     tr.appendChild(actions);
     return tr;
@@ -504,6 +705,8 @@ function initUi() {
       return;
     }
 
+    // The list is about to change; never keep showing a quota for a stale row.
+    clearQuota();
     setBusy(true);
     setStatus("正在加载密钥列表…", "info");
 
@@ -580,6 +783,8 @@ function initUi() {
       return;
     }
 
+    // An import can change the credential set, so drop any rendered quota.
+    clearQuota();
     setBusy(true);
     setStatus("正在导入 " + parsed.counts.valid + " 条密钥…" + notice, "info");
 
@@ -634,6 +839,8 @@ function initUi() {
       return;
     }
 
+    // A delete can invalidate the selection, so drop any rendered quota.
+    clearQuota();
     setBusy(true);
     setStatus("正在删除…", "info");
     var url = endpoints.credentialsUrl + "?name=" + encodeURIComponent(fileName);
@@ -656,6 +863,99 @@ function initUi() {
       })
       .then(function () {
         managementKey = "";
+        setBusy(false);
+      });
+  }
+
+  function renderQuota(parsed, name) {
+    el.quotaSelection.textContent = "已选择密钥：" + (name || "—") + "；订阅：" + parsed.plan + "。";
+    while (el.quotaBody.firstChild) {
+      el.quotaBody.removeChild(el.quotaBody.firstChild);
+    }
+    for (var i = 0; i < parsed.buckets.length; i++) {
+      var bucket = parsed.buckets[i];
+      var tr = doc.createElement("tr");
+      appendCell(tr, bucket.label);
+      appendCell(tr, bucket.remainingPercent + "%");
+      appendCell(tr, bucket.usedPercent + "%");
+      var progressCell = doc.createElement("td");
+      var progress = doc.createElement("progress");
+      progress.max = 1;
+      progress.value = bucket.remainingFraction;
+      progress.setAttribute("aria-label", bucket.label + "剩余 " + bucket.remainingPercent + "%");
+      progress.textContent = bucket.remainingPercent + "%";
+      progressCell.appendChild(progress);
+      tr.appendChild(progressCell);
+      appendCell(tr, bucket.resetTime);
+      el.quotaBody.appendChild(tr);
+    }
+    el.quotaPanel.hidden = false;
+  }
+
+  // Read-only quota query for one selected credential. One click equals one
+  // request: there is no polling, retry or scheduled refresh.
+  function onQuotaClick(event) {
+    if (busy || !secureContext) {
+      return;
+    }
+    var button = event.currentTarget;
+    var authIndex = button.getAttribute("data-auth-index");
+    if (!isSafeAuthIndex(authIndex)) {
+      clearQuota();
+      setQuotaStatus("该密钥缺少可用的凭据索引，无法查看配额。", "error");
+      return;
+    }
+    var managementKey = currentKey();
+    if (!managementKey) {
+      setStatus("请先输入 CPA 管理密钥。", "error");
+      el.mgmtKey.focus();
+      return;
+    }
+    var payload = buildQuotaPayload(authIndex);
+    var rowName = toCellText(button.getAttribute("data-file-name"));
+
+    // Clear the previous selection data before the new read starts.
+    selectedQuotaName = rowName;
+    el.quotaPanel.hidden = true;
+    el.quotaSelection.textContent = "";
+    while (el.quotaBody.firstChild) {
+      el.quotaBody.removeChild(el.quotaBody.firstChild);
+    }
+    setBusy(true);
+    setQuotaStatus("正在查询配额…", "info");
+
+    fetch(endpoints.quotaUrl, buildManagementRequest(managementKey, { method: "POST", body: payload.body }))
+      .then(function (response) {
+        if (response.status === 401 || response.status === 403) {
+          disconnect();
+          clearQuota();
+          setQuotaStatus(describeHttpFailure(response.status), "error");
+          return null;
+        }
+        if (!response.ok) {
+          setQuotaStatus(describeQuotaFailure(response.status), "error");
+          return null;
+        }
+        return readJson(response);
+      })
+      .then(function (result) {
+        if (result === null) {
+          return;
+        }
+        var parsed = parseQuotaResponse(result);
+        if (!parsed.ok) {
+          setQuotaStatus("配额数据不可用，未显示任何配额信息。", "error");
+          return;
+        }
+        renderQuota(parsed, selectedQuotaName);
+        setQuotaStatus("已加载所选密钥的配额。", "ok");
+      })
+      .catch(function () {
+        setQuotaStatus("无法连接 CPA 管理接口，请确认地址与网络。", "error");
+      })
+      .then(function () {
+        managementKey = "";
+        payload.body = "";
         setBusy(false);
       });
   }

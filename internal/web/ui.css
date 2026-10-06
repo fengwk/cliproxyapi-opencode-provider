@@ -292,6 +292,34 @@ td.empty-cell {
   padding: 1.25rem;
 }
 
+td.cell-actions {
+  white-space: nowrap;
+}
+
+td.cell-actions button + button {
+  margin-left: 0.4rem;
+}
+
+/* The quota table fits the viewport; only the progress column can grow. */
+.quota-table {
+  min-width: 0;
+}
+
+.quota-table th:first-child,
+.quota-table td:first-child {
+  white-space: nowrap;
+}
+
+.quota-table progress {
+  width: 100%;
+  max-width: 10rem;
+  vertical-align: middle;
+}
+
+#quota-selection {
+  margin-bottom: 0.5rem;
+}
+
 .notes {
   margin: 0.5rem 0;
   padding-left: 1.2rem;

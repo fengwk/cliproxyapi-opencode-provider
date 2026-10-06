@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -8,62 +9,126 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// A retry must publish the original tag, not rebuild the current default branch.
-func TestReleaseRetryPreservesTagAndRepository(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/release.yml")
+// workflowStep is the subset of a workflow step the structural tests inspect.
+type workflowStep struct {
+	Name string                 `yaml:"name"`
+	Uses string                 `yaml:"uses"`
+	With map[string]interface{} `yaml:"with"`
+	Env  map[string]string      `yaml:"env"`
+	Run  string                 `yaml:"run"`
+	If   string                 `yaml:"if"`
+}
+
+// workflowDoc is the subset of a workflow file the structural tests inspect.
+type workflowDoc struct {
+	Name        string                 `yaml:"name"`
+	RunName     string                 `yaml:"run-name"`
+	On          map[string]interface{} `yaml:"on"`
+	Env         map[string]string      `yaml:"env"`
+	Permissions map[string]string      `yaml:"permissions"`
+	Concurrency *struct {
+		Group            string `yaml:"group"`
+		CancelInProgress bool   `yaml:"cancel-in-progress"`
+	} `yaml:"concurrency"`
+	Jobs map[string]struct {
+		If          string            `yaml:"if"`
+		Permissions map[string]string `yaml:"permissions"`
+		Steps       []workflowStep    `yaml:"steps"`
+	} `yaml:"jobs"`
+}
+
+func loadWorkflow(t *testing.T, path string) (workflowDoc, string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	type step struct {
-		Name string            `yaml:"name"`
-		Uses string            `yaml:"uses"`
-		With map[string]string `yaml:"with"`
-		Env  map[string]string `yaml:"env"`
-		Run  string            `yaml:"run"`
-	}
-	var workflow struct {
-		On   map[string]interface{} `yaml:"on"`
-		Env  map[string]string      `yaml:"env"`
-		Jobs map[string]struct {
-			Steps []step `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(data, &workflow); err != nil {
+	var doc workflowDoc
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := workflow.On["workflow_dispatch"]; !ok {
+	return doc, string(data)
+}
+
+func stepByName(steps []workflowStep, name string) (workflowStep, bool) {
+	for _, step := range steps {
+		if step.Name == name {
+			return step, true
+		}
+	}
+	return workflowStep{}, false
+}
+
+// A retry must publish the original tag, not rebuild the current default branch,
+// and the publisher helper must come from the trusted default branch so an old
+// tag never executes its own helper code. Runs for one tag must be serialized.
+func TestReleaseRetryPreservesTagAndRepository(t *testing.T) {
+	doc, _ := loadWorkflow(t, ".github/workflows/release.yml")
+	if _, ok := doc.On["workflow_dispatch"]; !ok {
 		t.Fatal("release workflow must allow retrying an existing tag")
 	}
-	if workflow.Env["RELEASE_TAG"] != "${{ inputs.tag || github.ref_name }}" {
+	if doc.Env["RELEASE_TAG"] != "${{ inputs.tag || github.ref_name }}" {
 		t.Fatal("tag push and manual retry must select the same release tag")
 	}
-	build := workflow.Jobs["build"].Steps
+	if doc.Concurrency == nil || doc.Concurrency.CancelInProgress ||
+		!strings.Contains(doc.Concurrency.Group, "inputs.tag") ||
+		!strings.Contains(doc.Concurrency.Group, "github.ref_name") {
+		t.Fatal("release runs for one tag must share a non-cancelling concurrency group")
+	}
+	build := doc.Jobs["build"].Steps
 	if len(build) == 0 || !strings.HasPrefix(build[0].Uses, "actions/checkout@") ||
-		build[0].With["ref"] != "refs/tags/${{ env.RELEASE_TAG }}" {
+		fmt.Sprint(build[0].With["ref"]) != "refs/tags/${{ env.RELEASE_TAG }}" {
 		t.Fatal("release builds must check out the exact selected tag")
 	}
-	var commitResolved, commitPackaged, repositoryBound bool
-	for _, s := range build {
-		if s.Name == "Resolve plugin version" {
-			commitResolved = s.Env["PLUGIN_VERSION"] == "${{ env.RELEASE_TAG }}" &&
-				strings.Contains(s.Run, "git rev-parse HEAD")
+	var commitResolved, commitPackaged bool
+	if step, ok := stepByName(build, "Resolve plugin version"); ok {
+		commitResolved = step.Env["PLUGIN_VERSION"] == "${{ env.RELEASE_TAG }}" &&
+			strings.Contains(step.Run, "git rev-parse HEAD")
+	}
+	if step, ok := stepByName(build, "Package archive"); ok {
+		commitPackaged = step.Env["COMMIT"] == "${{ steps.version.outputs.commit }}"
+	}
+
+	var helperFromDefaultBranch, repositoryBound bool
+	for _, step := range doc.Jobs["publish"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			helperFromDefaultBranch = fmt.Sprint(step.With["ref"]) ==
+				"${{ github.event.repository.default_branch }}"
 		}
-		if s.Name == "Package archive" {
-			commitPackaged = s.Env["COMMIT"] == "${{ steps.version.outputs.commit }}"
+		if step.Name == "Publish GitHub Release" {
+			repositoryBound = step.Env["GH_REPO"] == "${{ github.repository }}" &&
+				step.Env["TAG"] == "${{ env.RELEASE_TAG }}" &&
+				strings.Contains(step.Run, "scripts/publish_release.py")
 		}
 	}
-	for _, s := range workflow.Jobs["publish"].Steps {
-		if s.Name == "Publish GitHub Release" {
-			repositoryBound = s.Env["GH_REPO"] == "${{ github.repository }}" &&
-				s.Env["TAG"] == "${{ env.RELEASE_TAG }}" &&
-				strings.Contains(s.Run, "gh release create") &&
-				strings.Contains(s.Run, "--repo \"$GH_REPO\"") &&
-				strings.Contains(s.Run, "--verify-tag") &&
-				!strings.Contains(s.Run, "--clobber")
-		}
+	if !commitResolved || !commitPackaged || !helperFromDefaultBranch || !repositoryBound {
+		t.Fatalf("release identity lost: resolved=%v packaged=%v helper=%v repository=%v",
+			commitResolved, commitPackaged, helperFromDefaultBranch, repositoryBound)
 	}
-	if !commitResolved || !commitPackaged || !repositoryBound {
-		t.Fatalf("release identity lost: resolved=%v packaged=%v repository=%v",
-			commitResolved, commitPackaged, repositoryBound)
+}
+
+// The run display title must carry the release tag so the auto-release
+// controller can find the matching workflow_dispatch run, whose head branch
+// (main) differs from the tag.
+func TestReleaseWorkflowExposesTagInRunName(t *testing.T) {
+	doc, _ := loadWorkflow(t, ".github/workflows/release.yml")
+	if !strings.Contains(doc.RunName, "inputs.tag") || !strings.Contains(doc.RunName, "github.ref_name") {
+		t.Fatalf("release run-name must include the selected tag, got %q", doc.RunName)
+	}
+}
+
+// The publisher owns the gh release calls; it must create a draft with
+// --verify-tag and never clobber assets or delete tags.
+func TestPublishHelperNeverClobbers(t *testing.T) {
+	data, err := os.ReadFile("scripts/publish_release.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, "--verify-tag") || !strings.Contains(src, "--draft") {
+		t.Fatal("publisher must create the release as a draft bound to the existing tag")
+	}
+	if strings.Contains(src, "--clobber") || strings.Contains(src, "--cleanup-tag") {
+		t.Fatal("publisher must never clobber assets or delete tags")
 	}
 }

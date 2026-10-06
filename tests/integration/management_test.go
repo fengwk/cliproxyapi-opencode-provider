@@ -64,9 +64,18 @@ func TestUIResourcesPublic(t *testing.T) {
 	}
 
 	// The UI entry point is reachable and carries the hardened headers.
-	status, _, _, err := h.rawRequestWithHeaders(http.MethodGet, "/v0/resource/plugins/"+pluginID+"/ui", nil, nil)
+	status, _, uiBody, err := h.rawRequestWithHeaders(http.MethodGet, "/v0/resource/plugins/"+pluginID+"/ui", nil, nil)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("GET ui: status %d err %v", status, err)
+	}
+	// The page shows the human-readable plugin name and keeps the technical ID
+	// visible for support.
+	uiHTML := string(uiBody)
+	if !strings.Contains(uiHTML, pluginName) {
+		t.Errorf("ui.html must display the plugin name %q", pluginName)
+	}
+	if !strings.Contains(uiHTML, pluginID) {
+		t.Errorf("ui.html must preserve the technical ID %q", pluginID)
 	}
 
 	// A query string must not mutate plugin/host state.

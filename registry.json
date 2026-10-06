@@ -3,7 +3,7 @@
   "plugins": [
     {
       "id": "cliproxyapi-opencode-provider",
-      "name": "OpenCode Go",
+      "name": "OpenCode Provider",
       "description": "OpenCode Go provider with session isolation and read-only quota queries.",
       "author": "fengwk",
       "repository": "https://github.com/fengwk/cliproxyapi-opencode-provider",

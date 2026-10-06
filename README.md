@@ -1,6 +1,7 @@
-# cliproxyapi-opencode-provider
+# OpenCode Provider
 
-CLIProxyAPI (CPA) 的 OpenCode Go 原生插件。独立仓库、独立动态库，不修改或 fork CPA。
+CLIProxyAPI (CPA) 的原生插件，目前支持 OpenCode Go。独立仓库、独立动态库，不修改或 fork CPA。
+插件展示名为 **OpenCode Provider**，稳定 ID 为 `cliproxyapi-opencode-provider`。
 
 支持 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 三种客户端协议，
 流式和非流式均可使用；协议转换直接复用 CPA 的公开 `sdk/translator` 与 `builtin`。
@@ -22,7 +23,7 @@ CLIProxyAPI (CPA) 的 OpenCode Go 原生插件。独立仓库、独立动态库�
 
 要求：支持原生插件的 CPA v8。真实宿主测试覆盖 v8.0.15 和 v8.0.16；
 更高 v8 版本由 CI 每日验证，不保证未通过测试的版本或 v9 兼容。
-当前 SDK 固定为 v8.0.16。
+SDK 精确版本锁定在 `go.mod`，由自动维护链路在验证兼容后升级。
 
 ### 1. 安装插件
 
@@ -38,7 +39,7 @@ plugins:
     - "https://raw.githubusercontent.com/fengwk/cliproxyapi-opencode-provider/main/registry.json"
 ```
 
-保存配置并让 CPA 重载，然后在 **插件商店** 中刷新、搜索 **OpenCode Go** 并点击安装。
+保存配置并让 CPA 重载，然后在 **插件商店** 中刷新、搜索 **OpenCode Provider** 并点击安装。
 商店会读取最新正式 GitHub Release，下载运行平台对应的 ZIP、验证 `checksums.txt`，
 安装动态库并启用插件。自定义源不替换官方源，也不需要等待官方商店收录。
 安装后在 **插件管理** 确认已注册、已生效；若安装响应要求重启，再重启 CPA。
@@ -204,6 +205,9 @@ make test                             # vet、Go 单测、Node 22+ UI 测试
 make race                             # Go race detector
 bash scripts/test-automerge.sh         # 自动合并安全边界
 bash scripts/test-package-plugin.sh    # 真实 ZIP 布局与校验和
+python3 scripts/test_dependency_policy.py # Go / 官方 Actions 纯版本升级策略
+python3 scripts/test_auto_release.py      # 自动发版、竞态与恢复
+python3 scripts/test_publish_release.py   # 不可变产物与草稿恢复
 CPA_BINARY=/absolute/path/to/cpa make integration
 make package                          # 需要 zip，输出 dist/pkg/
 ```
@@ -220,20 +224,32 @@ make package                          # 需要 zip，输出 dist/pkg/
 维护流程：
 
 1. 每日兼容性 CI 使用**未改动插件 SDK**测试最新稳定 CPA v8 宿主。
-2. Dependabot 每日更新 Go 依赖，所有 PR 跑单测、原生构建及最低/最新宿主测试。
-3. 只有 Dependabot 的纯 `go.mod`/`go.sum` 版本更新、直接依赖集合不变且完整 CI 通过时，
-   才对**精确已验证提交**自动 squash 合并；越界、过期 CI 或失败都不合并。
-4. 合并后显式触发主分支 CI，重新生成原生 artifacts；不依赖仓库的 Allow auto-merge 设置，
-   不自动发布 tag、部署或覆盖正在运行的 CPA。
-5. GitHub Actions 更新每周提 PR，工作流修改与 CPA v9 迁移需要人工确认。
+2. Dependabot 每日更新 Go 依赖，每周更新官方 GitHub Actions。所有 PR 跑单测、race、
+   管理页测试、自动化安全策略、三个平台原生构建及最低/最新真实宿主测试。
+3. Go 更新必须保持模块路径、直接依赖集合及 CPA v8 不变；Actions 更新只能改变现有
+   白名单官方 action 的版本引用，不得改变命令、权限、工作流结构或其他内容。
+   完整 CI 通过后，只对**精确已验证提交**自动 squash 合并。
+4. 合并后显式派发主分支完整 CI，不依赖仓库 Allow auto-merge 设置或被
+   `GITHUB_TOKEN` 抑制的 push 事件。
+5. 主分支 CI 通过后，控制器核对自上一正式版本以来的每个主线提交均来自已合并的
+   同仓库 Dependabot PR 且满足安全策略，然后自动递增 patch 版本、创建绑定该提交的
+   tag，并显式派发三平台 release 工作流。例如 `v0.1.2 -> v0.1.3`，无需人工打 tag。
+6. 每 6 小时自动协调未完成发布：缺少主分支 CI 时仅对合格更新重新派发 CI，
+   有活动任务时等待，派发或构建失败时重试同一 tag，绝不移动 tag、越过待发布版本，
+   或覆盖已经公开的 Release。发布前核对校验和、归档布局、平台与源码提交；
+   所有资源上传完整后才将草稿公开。
 
-发布流程：将已验证提交打上 `vX.Y.Z` tag 并推送，release 工作流自动构建三个平台、
-打包并发布正式 GitHub Release。当前不会在依赖更新合并后自动打 tag 或发版；
-CI artifacts 不是正式 Release。`registry.json` 不固定版本，新 Release 无需修改插件源。
+普通功能、配置、权限修改与 CPA v9 迁移不会被当作依赖更新自动发布；失败保持旧正式
+版本可用，不伪装成成功。持续失败或越界更新仍需要诊断；自动化不能保证外部 API、
+权限、托管 runner 或未来破坏性变更永不需要人工介入。协调器异常会建立去重的
+GitHub issue，仅包含运行链接，不公开日志或凭据。
+
+人工功能发版仍可对已验证提交推送 `vX.Y.Z` tag；CI artifacts 不是正式 Release。
+`registry.json` 不固定版本，新 Release 无需修改插件源。
 发布不等于部署，已安装插件需在 CPA 插件商店中主动更新，不会后台覆盖运行中的动态库。
-发布失败且尚未创建 Release 时，可从主分支重试原有 tag，例如
-`gh workflow run release.yml --ref main -f tag=v0.1.0`；产物仍构建自该 tag，
-无需移动 tag 或改写历史。
+也可手动运行 `auto-release` 协调器；人工 tag 的失败发布可从主分支重试，例如
+`gh workflow run release.yml --ref main -f tag=v0.1.2`，产物仍构建自该 tag。仅自动化自有、
+尚未公开的草稿允许恢复；人工草稿不动，已公开资源不覆盖。
 
 宿主升级不会更新已经编译进插件的 translator。宿主自己的池化/亲和逻辑可独立升级；
 需要新的 SDK 转换逻辑时安装重新构建的插件，而不是手改转换器。

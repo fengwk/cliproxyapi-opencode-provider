@@ -42,6 +42,12 @@ func TestCustomRegistryUsesCPAStoreContract(t *testing.T) {
 	if plugin.ID != provider.PluginID {
 		t.Fatalf("registry ID %q differs from plugin ID %q", plugin.ID, provider.PluginID)
 	}
+	if plugin.Name != provider.PluginName {
+		t.Fatalf("registry name %q differs from plugin display name %q", plugin.Name, provider.PluginName)
+	}
+	if plugin.Name == plugin.ID {
+		t.Fatalf("registry name must be a human-readable display name, not the technical ID %q", plugin.ID)
+	}
 	if plugin.Repository != "https://github.com/fengwk/cliproxyapi-opencode-provider" {
 		t.Fatalf("unexpected repository %q", plugin.Repository)
 	}

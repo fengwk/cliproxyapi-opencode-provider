@@ -9,7 +9,12 @@ import (
 const ProviderID = "opencode-go"
 
 // PluginID is the host-local plugin identifier and the resource route prefix.
+// The host derives it from the plugin library filename, not from display metadata.
 const PluginID = "cliproxyapi-opencode-provider"
+
+// PluginName is the human-readable plugin name shown by the host store,
+// registration metadata and management UI.
+const PluginName = "OpenCode Provider"
 
 // Version is the plugin release version. It can be overridden at build time via
 // -ldflags "-X github.com/fengwk/cliproxyapi-opencode-provider/internal/provider.Version=...".
@@ -24,7 +29,7 @@ const modelPrefix = ProviderID + "/"
 // Metadata returns the registration metadata reported to the host.
 func Metadata() pluginapi.Metadata {
 	return pluginapi.Metadata{
-		Name:             PluginID,
+		Name:             PluginName,
 		Version:          Version,
 		Author:           "fengwk",
 		GitHubRepository: GitHubRepository,

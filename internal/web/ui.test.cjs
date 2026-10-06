@@ -248,6 +248,16 @@ test("ui.html is CSP-safe and wires the embedded assets", () => {
   assert.ok(html.includes("routing.session-affinity: true"));
 });
 
+test("ui.html shows the plugin display name and keeps the technical ID", () => {
+  const html = readAsset("ui.html");
+  assert.ok(html.includes("<title>OpenCode Provider · 密钥与配额管理</title>"));
+  assert.ok(html.includes("<h1>OpenCode Provider</h1>"));
+  // The technical ID stays visible in the subtitle.
+  assert.ok(html.includes("<code>cliproxyapi-opencode-provider</code>"));
+  // Upstream-facing import labels still name the OpenCode Go upstream.
+  assert.ok(html.includes("导入 OpenCode Go 密钥"));
+});
+
 // Run the actual form handler, not only the exported pure helpers.
 async function submitImport(response, networkFailure = false) {
   const elements = new Map();

@@ -47,8 +47,10 @@ func TestUIResourcesPublic(t *testing.T) {
 		if got := header.Get("Content-Type"); !strings.Contains(got, tc.contentType) {
 			t.Errorf("GET %s Content-Type = %q, want to contain %q", tc.path, got, tc.contentType)
 		}
-		if csp := header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
-			t.Errorf("GET %s CSP = %q, want self-only policy", tc.path, csp)
+		// The host must preserve same-origin iframe support without widening other directives.
+		wantCSP := "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'"
+		if csp := header.Get("Content-Security-Policy"); csp != wantCSP {
+			t.Errorf("GET %s CSP = %q, want %q", tc.path, csp, wantCSP)
 		}
 		if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
 			t.Errorf("GET %s X-Content-Type-Options = %q, want nosniff", tc.path, got)

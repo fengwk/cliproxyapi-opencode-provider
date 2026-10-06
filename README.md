@@ -102,11 +102,15 @@ plugins:
 
 ### 3. 导入 OpenCode Go 密钥
 
-启动 CPA 后打开：
+启动 CPA 后，在管理面板左侧「插件」分组点击 **OpenCode Provider**，即可打开密钥管理页。
+它不是「插件管理」里的基础配置抽屉。也可以直接打开：
 
 ```text
 http://127.0.0.1:8317/v0/resource/plugins/cliproxyapi-opencode-provider/ui
 ```
+
+插件页只允许同源管理面板 iframe 嵌入。若管理前端与 CPA 服务使用不同源，
+请直接打开上面的 CPA 资源地址；不要移除 CSP 或允许任意站点嵌入密钥页。
 
 输入 CPA **管理密钥**，再逐行粘贴 OpenCode Go 的 API keys。支持批量导入、去重、
 非敏感状态列表和删除。管理密钥、下游访问 CPA 的 API key、OpenCode 上游 API key

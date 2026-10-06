@@ -45,11 +45,7 @@ vet:
 
 test: vet
 	go test ./...
-	@if ls internal/web/*.test.cjs >/dev/null 2>&1; then \
-		node --test internal/web/*.test.cjs; \
-	else \
-		echo "no UI tests found at internal/web/*.test.cjs"; \
-	fi
+	node --test internal/web/ui.test.cjs
 
 race:
 	go test -race ./...

@@ -67,6 +67,11 @@ fi
 
 archive="${plugin_id}_${version}_${goos}_${goarch}.zip"
 mkdir -p "$outdir"
+# zip runs from inside the staging directory, so a relative outdir (e.g.
+# "dist/pkg" from `make package`) would be resolved against the stage and the
+# archive would be written to the wrong place or lost with the stage. Pin the
+# output directory to an absolute path before archiving.
+outdir="$(cd "$outdir" && pwd)"
 out="${outdir}/${archive}"
 
 stage="$(mktemp -d)"

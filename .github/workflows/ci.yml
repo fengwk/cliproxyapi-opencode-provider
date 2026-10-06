@@ -45,6 +45,7 @@ jobs:
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
           bash scripts/test-automerge.sh
+          bash scripts/test-package-plugin.sh
 
       - name: Makefile smoke test
         run: make help

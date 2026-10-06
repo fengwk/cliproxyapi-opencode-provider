@@ -5,6 +5,9 @@ name: dependabot-automerge
 # metadata through the GitHub API and merges only when the change is a pure
 # Dependabot dependency version bump that passed the full CI (including the
 # minimum and latest real-host integration jobs) for the exact head commit.
+# The repository has auto-merge disabled, so the merge is performed immediately
+# for the tested head; because a GITHUB_TOKEN merge does not emit a push event,
+# the main-branch ci run is dispatched explicitly afterwards.
 on:
   workflow_run:
     workflows: ["ci"]
@@ -24,12 +27,14 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Required to dispatch the main-branch ci run after the merge.
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
 
-      - name: Guard and enable auto-merge
+      - name: Guard, merge and re-run CI
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Decides whether a completed CI run for a Dependabot pull request may be
-# auto-merged, and performs the merge when it is safe.
+# merged, and performs the merge when it is safe.
 #
 # This script is intentionally run from the trusted default branch by a
 # `workflow_run` job. It never checks out or executes pull-request code; it only
 # reads pull-request metadata and file contents through the GitHub API and then
 # merges the exact commit that CI validated.
+#
+# The repository does not enable GitHub auto-merge, so the script merges
+# immediately with `--match-head-commit` (GitHub still refuses the merge if the
+# head moved). Merging with GITHUB_TOKEN does not emit a push event, so the
+# main-branch CI is explicitly dispatched afterwards.
 #
 # The caller must pass EXPECTED_HEAD_SHA = the immutable
 # github.event.workflow_run.head_sha of the completed CI run. If the pull request
@@ -173,17 +178,27 @@ main() {
 		echo "dependabot-automerge: pull request head moved from the CI-tested commit ${expected_head} to ${current_head}; leaving the pull request open"
 		return 0
 	fi
-	echo "dependabot-automerge: ${decision}; enabling squash auto-merge for tested commit ${expected_head}"
+	echo "dependabot-automerge: ${decision}; merging tested commit ${expected_head}"
 
 	local state
-	state="$("$gh" pr view "$pr" --repo "$repo" --json state,autoMergeRequest \
-		--jq '.state + " " + (if .autoMergeRequest == null then "none" else "enabled" end)')"
-	case "$state" in
-	MERGED\ *) echo "dependabot-automerge: pull request is already merged"; return 0 ;;
-	OPEN\ enabled) echo "dependabot-automerge: auto-merge is already enabled"; return 0 ;;
-	esac
+	state="$("$gh" pr view "$pr" --repo "$repo" --json state --jq '.state')"
+	if [[ "$state" == "MERGED" ]]; then
+		echo "dependabot-automerge: pull request is already merged"
+		return 0
+	fi
 
-	"$gh" pr merge "$pr" --repo "$repo" --squash --auto --match-head-commit "$expected_head"
+	# Immediate squash merge of the exact commit CI validated. --match-head-commit
+	# makes GitHub reject the merge if the head moved since the check above, so a
+	# newer untested commit can never be merged.
+	if ! "$gh" pr merge "$pr" --repo "$repo" --squash --match-head-commit "$expected_head"; then
+		echo "dependabot-automerge: merge was refused for tested commit ${expected_head}; not dispatching CI" >&2
+		return 1
+	fi
+
+	# A merge performed with GITHUB_TOKEN does not trigger the push event, so the
+	# main-branch CI would never run for the merge commit. Dispatch it explicitly
+	# for the fixed main branch only.
+	"$gh" workflow run ci.yml --repo "$repo" --ref main
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

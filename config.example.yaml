@@ -9,7 +9,7 @@ server:
 # disabled; the plugin UI is served from the management/resource routes instead.
 management:
   allow-remote: false
-  secret-key: "$2a$10$hvj2n7QXEh5f5qY1cyQaz.7LM4bU4X4NiPJhMA/lNMFaphNnCQR22"
+  secret-key: "replace-with-management-password"
   disable-control-panel: true
 # Keys clients use against this proxy (not OpenCode upstream keys).
 access:
@@ -22,18 +22,23 @@ oauth:
 routing:
   strategy: "round-robin"
   session-affinity: true
+  session-affinity-ttl: "1h"
+  retry:
+    request-retry: 3
+    max-retry-credentials: 0
+    max-retry-interval: 30
 plugins:
   enabled: true
   dir: "./plugins"
   configs:
     cliproxyapi-opencode-provider:
       enabled: true
-# OpenCode Go upstream endpoint.
+      # OpenCode Go upstream endpoint.
       base-url: "https://opencode.ai/zen/go/v1"
-# Optional custom models. protocol is one of: openai, claude, openai-response.
-# models:
-#   - id: "opencode-go-custom"
-#     protocol: "openai"
+      # Optional custom models. protocol is one of: openai, claude, openai-response.
+      # models:
+      #   - id: "custom-model"
+      #     protocol: "openai"
 
 # Native library location (see `make build` and the release archives):
 #   <plugins.dir>/<goos>/<goarch>/cliproxyapi-opencode-provider.so

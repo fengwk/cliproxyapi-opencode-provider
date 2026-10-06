@@ -313,6 +313,13 @@ func (m *Manager) execute(req rpcExecutorRequest) (pluginapi.ExecutorResponse, e
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return pluginapi.ExecutorResponse{}, upstreamError(resp.StatusCode)
 	}
+	if !json.Valid(resp.Body) || !gjson.ParseBytes(resp.Body).IsObject() {
+		return pluginapi.ExecutorResponse{}, &ProviderError{
+			Code:       "upstream_error",
+			Message:    "upstream response is not a JSON object",
+			HTTPStatus: http.StatusBadGateway,
+		}
+	}
 	payload := resp.Body
 	if plan.clientResp != plan.wire {
 		converted := resp.Body
@@ -381,6 +388,11 @@ func (m *Manager) pumpStream(req rpcExecutorRequest, plan *prepared, upstreamStr
 		m.bridge.StreamClose(req.StreamID, errMessage)
 	}
 	defer closeDown("")
+	defer func() {
+		if recover() != nil {
+			closeDown("stream processing failed")
+		}
+	}()
 
 	emit := func(payload []byte) bool {
 		if len(payload) == 0 {
@@ -645,7 +657,10 @@ func classifyNativeEvent(wire translator.Format, data []byte) (streamSignal, boo
 		return signalNone, false
 	}
 	if isSSEDone(trimmed) {
-		return signalDone, false
+		if wire == translator.FormatOpenAI {
+			return signalDone, false
+		}
+		return signalNone, false
 	}
 	if !json.Valid(trimmed) {
 		return signalError, true

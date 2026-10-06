@@ -161,18 +161,18 @@ func callHost(method string, payload []byte) (out []byte, err error) {
 		defer C.free(unsafe.Pointer(req))
 	}
 	var resp C.cliproxy_buffer
-	if rc := C.call_host_api(cMethod, req, C.size_t(len(payload)), &resp); rc != 0 {
+	rc := C.call_host_api(cMethod, req, C.size_t(len(payload)), &resp)
+	defer C.free_host_buffer(resp.ptr, resp.len)
+	if rc != 0 {
 		return nil, fmt.Errorf("host callback %s failed (rc=%d)", method, int(rc))
 	}
 	if resp.ptr == nil || resp.len == 0 {
 		return []byte("{}"), nil
 	}
 	if uint64(resp.len) > maxBufferLen {
-		C.free_host_buffer(resp.ptr, resp.len)
 		return nil, fmt.Errorf("host callback %s returned oversized buffer", method)
 	}
 	out = C.GoBytes(unsafe.Pointer(resp.ptr), C.int(resp.len))
-	C.free_host_buffer(resp.ptr, resp.len)
 	return out, nil
 }
 

@@ -39,7 +39,7 @@ jobs:
         run: go test -race ./...
 
       - name: UI tests
-        run: node --test internal/web/*.test.cjs
+        run: node --test internal/web/ui.test.cjs
 
       - name: Automation script tests
         run: |

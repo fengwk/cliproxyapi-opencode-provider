@@ -596,13 +596,15 @@ function initUi() {
         }
         return readJson(response).then(function (resultPayload) {
           var result = formatImportResult(response.status, resultPayload);
-          // The import was processed, so the textarea content is cleared.
-          el.keys.value = "";
+          // Keep the input on partial failure so failed keys can be resubmitted.
+          if (result.failed === 0) {
+            el.keys.value = "";
+          }
           setStatus(result.summary + notice + " 请点击“刷新列表”查看最新状态。", result.level);
         });
       })
       .catch(function () {
-        setStatus("无法连接 CPA 管理接口，请确认地址与网络；密钥未提交。", "error");
+        setStatus("无法确认导入结果，请检查网络并刷新列表后再决定是否重试。", "error");
       })
       .then(function () {
         // Drop every reference this scope held to the management key and request body.

@@ -274,10 +274,14 @@ func resultError(err error) envelopeResult {
 		return errorResult("plugin_error", "unknown error", 0)
 	}
 	if hostErr, ok := err.(*HostError); ok {
-		return errorResult("host_call_failed", "host callback failed", hostErr.HTTPStatus)
+		result := errorResult("host_call_failed", "host callback failed", hostErr.HTTPStatus)
+		result.Error.Retryable = hostErr.Retryable
+		return result
 	}
 	if providerErr, ok := err.(*ProviderError); ok {
-		return errorResult(providerErr.Code, providerErr.Message, providerErr.HTTPStatus)
+		result := errorResult(providerErr.Code, providerErr.Message, providerErr.HTTPStatus)
+		result.Error.Retryable = providerErr.Retryable
+		return result
 	}
 	return errorResult("plugin_error", "internal error", 0)
 }

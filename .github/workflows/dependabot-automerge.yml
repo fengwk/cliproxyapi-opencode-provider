@@ -5,8 +5,8 @@ name: dependabot-automerge
 # metadata through the GitHub API and merges only when the change is a pure
 # Dependabot dependency version bump that passed the full CI (including the
 # minimum and latest real-host integration jobs) for the exact head commit.
-# The repository has auto-merge disabled, so the merge is performed immediately
-# for the tested head; because a GITHUB_TOKEN merge does not emit a push event,
+# Exact-head merging needs no repository auto-merge setting. A GITHUB_TOKEN
+# merge does not emit a push event, so
 # the main-branch ci run is dispatched explicitly afterwards.
 on:
   workflow_run:

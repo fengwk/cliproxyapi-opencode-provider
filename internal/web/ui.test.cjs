@@ -11,6 +11,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const ui = require("./ui.js");
 
@@ -245,4 +246,70 @@ test("ui.html is CSP-safe and wires the embedded assets", () => {
   assert.ok(html.includes("https://opencode.ai/docs/go"));
   assert.ok(html.includes('aria-live="polite"'));
   assert.ok(html.includes("routing.session-affinity: true"));
+});
+
+// Run the actual form handler, not only the exported pure helpers.
+async function submitImport(response, networkFailure = false) {
+  const elements = new Map();
+  const getElement = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, {
+        value: "", disabled: false, hidden: false, textContent: "",
+        handlers: {},
+        addEventListener(name, handler) { this.handlers[name] = handler; },
+        querySelectorAll() { return []; }
+      });
+    }
+    return elements.get(id);
+  };
+  const requests = [];
+  vm.runInNewContext(readAsset("ui.js"), {
+    document: { readyState: "complete", getElementById: getElement },
+    window: {
+      location: {
+        protocol: "http:", hostname: "127.0.0.1",
+        pathname: "/v0/resource/plugins/cliproxyapi-opencode-provider/ui"
+      }
+    },
+    TextEncoder,
+    fetch: async (url, init) => {
+      requests.push({ url, init });
+      if (networkFailure) {
+        throw new Error("uncertain network result");
+      }
+      return {
+        status: response.status, ok: response.status >= 200 && response.status < 300,
+        text: async () => JSON.stringify(response.body)
+      };
+    }
+  });
+  getElement("mgmt-key").value = "fake-management-key";
+  getElement("keys").value = "fake-upstream-key";
+  getElement("import-form").handlers.submit({ preventDefault() {} });
+  for (let i = 0; i < 10 && getElement("import-btn").disabled; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(getElement("import-btn").disabled, false, "request must settle");
+  assert.equal(requests.length, 1, "no automatic retry");
+  assert.equal(requests[0].init.headers.Authorization, "Bearer fake-management-key");
+  return getElement;
+}
+
+test("successful form import clears the submitted keys", async () => {
+  const get = await submitImport({ status: 200, body: { imported: 1, skipped: 0, failed: 0 } });
+  assert.equal(get("keys").value, "");
+  assert.match(get("status").textContent, /导入成功/);
+});
+
+test("partial form import retains keys so failed entries can be retried", async () => {
+  const get = await submitImport({ status: 207, body: { imported: 0, skipped: 0, failed: 1 } });
+  assert.equal(get("keys").value, "fake-upstream-key");
+  assert.match(get("status").textContent, /部分导入完成/);
+});
+
+test("network failure retains keys and does not claim the server rejected them", async () => {
+  const get = await submitImport({}, true);
+  assert.equal(get("keys").value, "fake-upstream-key");
+  assert.match(get("status").textContent, /无法确认导入结果/);
+  assert.equal(get("status").textContent.includes("未提交"), false);
 });

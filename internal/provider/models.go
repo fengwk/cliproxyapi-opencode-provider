@@ -145,6 +145,7 @@ func (m *Manager) discoverModels(cfg Config, key, callbackID string) []pluginapi
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+key)
 	headers.Set("Accept", "application/json")
+	headers.Set("User-Agent", PluginID+"/"+Version)
 	resp, err := m.bridge.HTTPDo(http.MethodGet, joinURL(cfg.BaseURL, "/models"), headers, nil, callbackID)
 	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return models

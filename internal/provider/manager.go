@@ -54,8 +54,7 @@ func (m *Manager) setConfig(cfg Config) {
 	m.mu.Unlock()
 }
 
-// stopped reports whether the plugin is quiesced or shut down. New executions
-// are rejected while true. It is retained as a helper for tests.
+// stopped reports whether the plugin is quiesced or shut down.
 func (m *Manager) stopped() bool {
 	m.lifeMu.Lock()
 	defer m.lifeMu.Unlock()
@@ -174,11 +173,8 @@ func (m *Manager) shutdown() {
 	m.workers.Wait()
 }
 
-// applyConfig installs a validated config snapshot. Reconfiguring a quiesced
-// manager first drains the old workers, then reopens with a fresh run channel so
-// inference works again; the config is validated by the caller beforehand so an
-// invalid config can never reactivate the manager. An active reconfigure does not
-// interrupt in-flight streams, and a final shutdown is never reversed.
+// applyConfig resumes a quiesced manager only after old workers drain. Active
+// streams keep their config snapshot; final shutdown cannot be reversed.
 func (m *Manager) applyConfig(cfg Config) error {
 	m.cycle.Lock()
 	defer m.cycle.Unlock()
@@ -344,8 +340,6 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	}
 	cfg, err := parseConfig(req.ConfigYAML)
 	if err != nil {
-		// Validate before touching lifecycle state so an invalid config can never
-		// reopen a quiesced manager.
 		return mustEnvelope(errorResult("invalid_config", err.Error(), http.StatusBadRequest))
 	}
 	if err := m.applyConfig(cfg); err != nil {

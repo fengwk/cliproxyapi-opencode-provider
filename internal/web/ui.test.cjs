@@ -168,12 +168,12 @@ test("isSafeFileName and toCellText guard delete input", () => {
 });
 
 test("formatImportResult reports success and partial imports without server strings", () => {
-  const ok = ui.formatImportResult(200, { imported: 2, skipped: 1, failed: 0 });
+  const ok = ui.formatImportResult(200, { imported: 2, skipped: 1, failed: 0 }, 3);
   assert.equal(ok.ok, true);
   assert.equal(ok.level, "ok");
   assert.match(ok.summary, /成功 2/);
 
-  const partial = ui.formatImportResult(207, { imported: 1, skipped: 0, failed: 1 });
+  const partial = ui.formatImportResult(207, { imported: 1, skipped: 0, failed: 1 }, 2);
   assert.equal(partial.ok, true);
   assert.equal(partial.level, "warn");
   assert.match(partial.summary, /部分导入完成/);
@@ -203,6 +203,8 @@ test("formatImportResult accepts only trusted counts summing to the submitted to
   );
   // The three counts must account for exactly the submitted deduped keys.
   assert.equal(check({ imported: 1, skipped: 0, failed: 0 }, 3).ok, false);
+  assert.equal(check({ imported: 1, skipped: 0, failed: 0 }, undefined).ok, false);
+  assert.equal(check({ imported: 1, skipped: 0, failed: 0 }, "1").ok, false);
   // Every unconfirmed body uses the same fixed local, non-reflective message.
   assert.match(check({}, 0).summary, /无法确认导入结果/);
 

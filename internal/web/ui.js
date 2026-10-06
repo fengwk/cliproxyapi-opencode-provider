@@ -418,16 +418,12 @@ function countNotice(counts) {
   return parts.length ? "（" + parts.join("，") + "）" : "";
 }
 
-// A trusted import count must be a real non-negative safe integer; a coerced
-// string, fraction, negative or unsafe value is never accepted as success.
+// Import counts must be actual non-negative safe integers.
 function isNonNegativeSafeInteger(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-// Validate the import response contract before reporting anything. For a 2xx
-// response this requires a plain object whose imported/skipped/failed are
-// trusted counts summing to the submitted deduped count. Anything else is
-// reported as unconfirmed so the caller retains the input instead of clearing it.
+// Confirm that the import report accounts for every submitted key.
 function formatImportResult(status, payload, expectedCount) {
   if (!(status >= 200 && status < 300)) {
     return {
@@ -442,13 +438,11 @@ function formatImportResult(status, payload, expectedCount) {
   var data = isPlainObject(payload) ? payload : null;
   var countsValid =
     data !== null &&
+    isNonNegativeSafeInteger(expectedCount) &&
     isNonNegativeSafeInteger(data.imported) &&
     isNonNegativeSafeInteger(data.skipped) &&
-    isNonNegativeSafeInteger(data.failed);
-  if (countsValid && isNonNegativeSafeInteger(expectedCount)) {
-    // Counts must account for exactly the keys that were submitted.
-    countsValid = data.imported + data.skipped + data.failed === expectedCount;
-  }
+    isNonNegativeSafeInteger(data.failed) &&
+    data.imported + data.skipped + data.failed === expectedCount;
   if (!countsValid) {
     // Never guess: an unrecognized body is not a confirmed success.
     return {

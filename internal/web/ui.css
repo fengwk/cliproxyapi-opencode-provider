@@ -320,6 +320,7 @@ td.cell-actions button + button {
 
 #quota-selection {
   margin-bottom: 0.5rem;
+  overflow-wrap: anywhere;
 }
 
 .notes {

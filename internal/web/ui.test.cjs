@@ -690,19 +690,21 @@ test("malformed quota response shows a fixed error and never a guessed value", a
 });
 
 test("quota auth failure disconnects and clears the key and old quota", async () => {
-  const { get, requests, settle } = await mountQuotaUi(
-    [{ name: "opencode-go-1.json", auth_index: "idx-1" }],
-    { status: 401, body: { error: "leaked-secret" } }
-  );
-  const button = get("files-body").querySelectorAll("button[data-action='quota']")[0];
-  button.handlers.click({ currentTarget: button });
-  await settle();
+  for (const status of [401, 403]) {
+    const { get, requests, settle } = await mountQuotaUi(
+      [{ name: "opencode-go-1.json", auth_index: "idx-1" }],
+      { status, body: { error: "leaked-secret" } }
+    );
+    const button = get("files-body").querySelectorAll("button[data-action='quota']")[0];
+    button.handlers.click({ currentTarget: button });
+    await settle();
 
-  assert.equal(get("mgmt-key").value, "");
-  assert.equal(get("quota-panel").hidden, true);
-  assert.match(get("quota-status").textContent, /401/);
-  assert.equal(get("quota-status").textContent.includes("leaked-secret"), false);
-  assert.equal(requests.length, 2);
+    assert.equal(get("mgmt-key").value, "");
+    assert.equal(get("quota-panel").hidden, true);
+    assert.equal(get("quota-status").textContent.includes(String(status)), true);
+    assert.equal(get("quota-status").textContent.includes("leaked-secret"), false);
+    assert.equal(requests.length, 2);
+  }
 });
 
 test("a non-auth quota error uses a fixed message and does not echo the body", async () => {

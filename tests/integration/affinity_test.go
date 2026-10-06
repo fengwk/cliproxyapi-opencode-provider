@@ -138,14 +138,31 @@ func TestSessionFallbackContent(t *testing.T) {
 		t.Errorf("fallback credential changed: %q -> %q", firstKey, got)
 	}
 
+	// An appended turn changes the content fingerprint but retains the prefix.
+	// CPA must resolve the conversation ancestor without a plugin session map.
+	extended := append(append([]any(nil), history...),
+		map[string]any{"role": "assistant", "content": fixtureText},
+		map[string]any{"role": "user", "content": "Please continue."},
+	)
+	if status, raw := sendChat(t, h, nativeGLM, "", "", false, extended); status != http.StatusOK {
+		t.Fatalf("extended history status %d body %s", status, truncate(raw, 400))
+	}
+	last, _ = lastUpstreamCall(h, "/v1/chat/completions")
+	if got := last.Header.Get("x-opencode-session"); got != firstScope {
+		t.Errorf("extended history changed the upstream session: %q -> %q", firstScope, got)
+	}
+	if got := upstreamKeyOf(last); got != firstKey {
+		t.Errorf("extended history changed the credential: %q -> %q", firstKey, got)
+	}
+
 	// The canonical conversation root must survive to the upstream body.
 	var body map[string]any
 	if err := json.Unmarshal(last.Body, &body); err != nil {
 		t.Fatalf("upstream body not JSON: %v", err)
 	}
 	messages := bodyArray(body, "messages")
-	if len(messages) != len(history) {
-		t.Errorf("upstream messages length = %d, want %d", len(messages), len(history))
+	if len(messages) != len(extended) {
+		t.Errorf("upstream messages length = %d, want %d", len(messages), len(extended))
 	}
 }
 

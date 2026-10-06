@@ -30,6 +30,16 @@ type quotaUpstream struct {
 	body        []byte
 }
 
+// modelsUpstream is an overridable response for GET /v1/models. The zero value
+// means "no override": the default three-model fixture is served. The set flag
+// distinguishes an explicit override (including a valid empty catalog) from the
+// default so a test can drive catalog changes deterministically.
+type modelsUpstream struct {
+	set    bool
+	status int
+	body   []byte
+}
+
 // mockOpenCode is a local stand-in for the OpenCode Go upstream. It validates
 // the native request contract and serves deterministic fixtures.
 type mockOpenCode struct {
@@ -40,6 +50,7 @@ type mockOpenCode struct {
 	violations []string
 	failedOnce map[string]bool
 	quota      quotaUpstream
+	models     modelsUpstream
 }
 
 var (
@@ -123,6 +134,30 @@ func (m *mockOpenCode) quotaResponse() quotaUpstream {
 	return m.quota
 }
 
+// setModelsResponse overrides the GET /v1/models response. The body is copied so
+// callers may reuse or mutate their slice, and a zero status means HTTP 200. An
+// explicit empty catalog ({"data":[]}) is a valid override distinct from the
+// default fixture. It is safe to call concurrently with in-flight requests.
+func (m *mockOpenCode) setModelsResponse(status int, body []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.models = modelsUpstream{set: true, status: status, body: append([]byte(nil), body...)}
+}
+
+// resetModelsResponse restores the default three-model discovery fixture.
+func (m *mockOpenCode) resetModelsResponse() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.models = modelsUpstream{}
+}
+
+// modelsResponse returns a copy of the current /v1/models override.
+func (m *mockOpenCode) modelsResponse() modelsUpstream {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return modelsUpstream{set: m.models.set, status: m.models.status, body: append([]byte(nil), m.models.body...)}
+}
+
 func (m *mockOpenCode) handle(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	call := mockCall{Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(), Body: body}
@@ -147,12 +182,24 @@ func (m *mockOpenCode) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleModels serves the discovered catalog. Discovery uses the selected key.
+// A test override, when set, replaces the fixture verbatim (status and body).
 func (m *mockOpenCode) handleModels(w http.ResponseWriter, call mockCall) {
 	key := bearerKey(call.Header.Get("Authorization"))
 	if key == "" {
 		m.violationf("GET /v1/models missing Authorization header")
 	} else if !isUpstreamKey(key) {
 		m.violationf("GET /v1/models used unexpected credential %q", key)
+	}
+	override := m.modelsResponse()
+	if override.set {
+		status := override.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(override.body)
+		return
 	}
 	data := map[string]any{"object": "list"}
 	models := make([]any, 0, 3)

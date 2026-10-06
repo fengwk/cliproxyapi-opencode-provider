@@ -1,21 +1,16 @@
 package provider
 
 import (
-	_ "embed"
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
-//go:embed models.json
-var modelsSnapshot []byte
-
-// family routes map a native model-id prefix to its upstream protocol.
+// familyRoutes map a native model-id prefix to its upstream protocol.
 // Order is irrelevant because the prefixes are mutually exclusive.
 var familyRoutes = []struct {
 	prefix string
@@ -63,33 +58,10 @@ func routeNativeModel(cfg Config, native string) (translator.Format, bool) {
 	return "", false
 }
 
-// snapshotEntries is the decoded models.json payload.
-type snapshotEntries struct {
-	Data []struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
-	} `json:"data"`
-}
-
-func loadSnapshot() ([]pluginapi.ModelInfo, error) {
-	var decoded snapshotEntries
-	if err := json.Unmarshal(modelsSnapshot, &decoded); err != nil {
-		return nil, fmt.Errorf("decode embedded model snapshot")
-	}
-	models := make([]pluginapi.ModelInfo, 0, len(decoded.Data))
-	for _, item := range decoded.Data {
-		id := strings.TrimSpace(item.ID)
-		if id == "" {
-			continue
-		}
-		models = append(models, modelInfo(id, item.Created, item.OwnedBy, false))
-	}
-	return models, nil
-}
-
-func modelInfo(native string, created int64, ownedBy string, userDefined bool) pluginapi.ModelInfo {
+// modelInfo builds one published ModelInfo for a native upstream id. The public
+// "opencode-go/" namespace is added exactly once and every official catalog
+// entry stays non-user-defined.
+func modelInfo(native string, created int64, ownedBy string) pluginapi.ModelInfo {
 	if ownedBy == "" {
 		ownedBy = "opencode"
 	}
@@ -100,74 +72,78 @@ func modelInfo(native string, created int64, ownedBy string, userDefined bool) p
 		OwnedBy:     ownedBy,
 		Name:        native,
 		DisplayName: native,
-		UserDefined: userDefined,
+		UserDefined: false,
 	}
 }
 
-// buildModels merges the embedded snapshot with configured overrides/additions.
-// Configured ids win over snapshot entries for the same native id and are
-// emitted in sorted order for deterministic registration.
-func buildModels(cfg Config) []pluginapi.ModelInfo {
-	models := make([]pluginapi.ModelInfo, 0, 64)
-	seen := make(map[string]struct{}, len(cfg.Routes))
-	configured := make([]string, 0, len(cfg.Routes))
-	for native := range cfg.Routes {
-		configured = append(configured, native)
+// catalogPayload is the upstream GET /models body. Data is a pointer so a
+// missing or null "data" field is distinguishable from an explicit empty list.
+type catalogPayload struct {
+	Data *[]catalogEntry `json:"data"`
+}
+
+type catalogEntry struct {
+	ID      string `json:"id"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// catalogInvalid reports an unusable upstream catalog without echoing any of it.
+func catalogInvalid() error {
+	return &ProviderError{
+		Code:       "invalid_upstream",
+		Message:    "upstream model catalog is invalid",
+		HTTPStatus: http.StatusBadGateway,
 	}
-	sort.Strings(configured)
-	for _, native := range configured {
-		models = append(models, modelInfo(native, 0, "", true))
-		seen[native] = struct{}{}
+}
+
+// invalidNativeRune reports whitespace or control characters, which can never
+// appear inside an official native model id.
+func invalidNativeRune(r rune) bool {
+	return unicode.IsSpace(r) || unicode.IsControl(r)
+}
+
+// decodeCatalog validates one official /models response: a top-level object with
+// a data array (missing or null data is invalid, an empty array is valid).
+// Native order, created and owned_by are preserved, the public prefix is applied
+// exactly once, and duplicate native ids are collapsed. Any malformed entry
+// rejects the whole catalog so partial or invented data is never published.
+func decodeCatalog(body []byte) ([]pluginapi.ModelInfo, error) {
+	var decoded catalogPayload
+	if err := json.Unmarshal(body, &decoded); err != nil || decoded.Data == nil {
+		return nil, catalogInvalid()
 	}
-	snapshot, err := loadSnapshot()
-	if err != nil {
-		return models
-	}
-	for _, item := range snapshot {
+	models := make([]pluginapi.ModelInfo, 0, len(*decoded.Data))
+	seen := make(map[string]struct{}, len(*decoded.Data))
+	for _, item := range *decoded.Data {
 		native := nativeModelID(item.ID)
+		if native == "" || strings.IndexFunc(native, invalidNativeRune) >= 0 {
+			return nil, catalogInvalid()
+		}
 		if _, ok := seen[native]; ok {
 			continue
 		}
 		seen[native] = struct{}{}
-		models = append(models, item)
+		models = append(models, modelInfo(native, item.Created, item.OwnedBy))
 	}
-	return models
+	return models, nil
 }
 
-// discoverModels asks the upstream /models endpoint through the host HTTP
-// callback using the supplied credential. It returns the merged static and
-// discovered model list; discovery failures degrade to the static list.
-func (m *Manager) discoverModels(cfg Config, key, callbackID string) []pluginapi.ModelInfo {
-	models := buildModels(cfg)
-	if strings.TrimSpace(key) == "" {
-		return models
-	}
+// discoverModels performs exactly one authenticated GET <base>/models through
+// the host HTTP callback and returns the official catalog. There is no static
+// snapshot, no last-good cache and no fallback: a missing credential is reported
+// by the caller, and every transport, status or payload failure is surfaced.
+func (m *Manager) discoverModels(cfg Config, key, callbackID string) ([]pluginapi.ModelInfo, error) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+key)
 	headers.Set("Accept", "application/json")
 	headers.Set("User-Agent", PluginID+"/"+Version)
 	resp, err := m.bridge.HTTPDo(http.MethodGet, joinURL(cfg.BaseURL, "/models"), headers, nil, callbackID)
-	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return models
+	if err != nil {
+		return nil, err
 	}
-	var decoded snapshotEntries
-	if err := json.Unmarshal(resp.Body, &decoded); err != nil {
-		return models
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, upstreamError(resp.StatusCode)
 	}
-	seen := make(map[string]struct{}, len(models))
-	for _, item := range models {
-		seen[nativeModelID(item.ID)] = struct{}{}
-	}
-	for _, item := range decoded.Data {
-		native := strings.TrimSpace(item.ID)
-		if native == "" {
-			continue
-		}
-		if _, ok := seen[native]; ok {
-			continue
-		}
-		seen[native] = struct{}{}
-		models = append(models, modelInfo(native, item.Created, item.OwnedBy, false))
-	}
-	return models
+	return decodeCatalog(resp.Body)
 }

@@ -42,7 +42,7 @@ func Metadata() pluginapi.Metadata {
 			{
 				Name:        "models",
 				Type:        pluginapi.ConfigFieldTypeArray,
-				Description: "Optional deterministic model route overrides: [{id, protocol: openai|claude|openai-response}].",
+				Description: "Optional deterministic protocol route overrides: [{id, protocol: openai|claude|openai-response}]. Overrides never add models; the published catalog comes only from the upstream /models response.",
 			},
 		},
 	}

@@ -217,6 +217,9 @@ make package                          # 需要 zip，输出 dist/pkg/
 打包并发布正式 GitHub Release。当前不会在依赖更新合并后自动打 tag 或发版；
 CI artifacts 不是正式 Release。`registry.json` 不固定版本，新 Release 无需修改插件源。
 发布不等于部署，已安装插件需在 CPA 插件商店中主动更新，不会后台覆盖运行中的动态库。
+发布失败且尚未创建 Release 时，可从主分支重试原有 tag，例如
+`gh workflow run release.yml --ref main -f tag=v0.1.0`；产物仍构建自该 tag，
+无需移动 tag 或改写历史。
 
 宿主升级不会更新已经编译进插件的 translator。宿主自己的池化/亲和逻辑可独立升级；
 需要新的 SDK 转换逻辑时安装重新构建的插件，而不是手改转换器。

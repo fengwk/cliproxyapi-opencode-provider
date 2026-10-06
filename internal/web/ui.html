@@ -1,5 +1,101 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>OpenCode Go</title><link rel="stylesheet" href="./ui.css"></head>
-<body><main><h1>OpenCode Go</h1></main><script src="./ui.js"></script></body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>OpenCode Go 密钥管理 · cliproxyapi-opencode-provider</title>
+<link rel="stylesheet" href="./ui.css">
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要内容</a>
+<header class="page-header">
+  <h1>OpenCode Go 密钥管理</h1>
+  <p class="subtitle">CLIProxyAPI 插件 <code>cliproxyapi-opencode-provider</code></p>
+</header>
+<main id="main">
+  <p id="insecure-warning" class="alert alert-error" role="alert" hidden>当前页面既非 HTTPS，也不是本机地址，出于安全考虑已禁用全部密钥操作。请改用 HTTPS，或在本机（localhost / 127.0.0.1 / [::1]）打开本页面。</p>
+
+  <section class="card" aria-labelledby="auth-heading">
+    <h2 id="auth-heading">1. 管理认证</h2>
+    <p class="hint">输入 CPA 管理密钥（management key）。该密钥仅保留在当前页面的输入框中，不会写入浏览器存储、Cookie 或 URL，也不会被记录或回显。</p>
+    <form id="auth-form" autocomplete="off">
+      <div class="field">
+        <label for="mgmt-key">CPA 管理密钥</label>
+        <input id="mgmt-key" name="mgmt-key" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" aria-describedby="mgmt-key-hint">
+        <p id="mgmt-key-hint" class="hint">远程访问需在 CPA 中启用远程管理（remote management）；密钥错误多次可能导致当前 IP 被临时封禁，本页面不会自动重试认证。</p>
+      </div>
+      <div class="actions">
+        <button type="submit" id="refresh-btn">连接并刷新</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" aria-labelledby="import-heading">
+    <h2 id="import-heading">2. 导入 OpenCode Go 密钥</h2>
+    <p class="hint">每行一个 OpenCode Go 密钥。首尾空白会被去除，重复项会被忽略；最多 100 行，每行不超过 4096 字符，单次请求体不超过 64 KiB。请勿在此粘贴 CPA 管理密钥或下游 API key。</p>
+    <form id="import-form" autocomplete="off">
+      <div class="field">
+        <label for="keys">OpenCode Go 密钥（每行一个）</label>
+        <textarea id="keys" name="keys" rows="6" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="keys-hint"></textarea>
+        <p id="keys-hint" class="hint">密钥仅随本次导入请求发送；导入成功后输入框会被清空，失败时会保留内容以便修改。</p>
+      </div>
+      <div class="field">
+        <label for="label">标签（可选）</label>
+        <input id="label" name="label" type="text" maxlength="128" autocomplete="off" spellcheck="false" aria-describedby="label-hint">
+        <p id="label-hint" class="hint">用于在 CPA 中区分这批密钥，最长 128 个字符。</p>
+      </div>
+      <div class="actions">
+        <button type="submit" id="import-btn">导入密钥</button>
+        <span id="import-progress" class="hint" hidden>正在提交…</span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card" aria-labelledby="list-heading">
+    <div class="section-head">
+      <h2 id="list-heading">3. 已托管的密钥</h2>
+      <button type="button" id="reload-btn">刷新列表</button>
+    </div>
+    <p id="summary" class="hint">尚未加载。</p>
+    <p id="status" class="status" role="status" aria-live="polite">尚未加载。请输入 CPA 管理密钥并点击“连接并刷新”。</p>
+    <div class="table-wrap is-empty" id="table-wrap">
+      <table>
+        <caption class="visually-hidden">已托管密钥列表（仅显示非密信息）</caption>
+        <thead>
+          <tr>
+            <th scope="col">名称</th>
+            <th scope="col">标签</th>
+            <th scope="col">状态</th>
+            <th scope="col">禁用</th>
+            <th scope="col">可用性</th>
+            <th scope="col">成功</th>
+            <th scope="col">失败</th>
+            <th scope="col">操作</th>
+          </tr>
+        </thead>
+        <tbody id="files-body">
+          <tr><td colspan="8" class="empty-cell">暂无数据。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">删除仅移除所选的 opencode-go 凭据文件；保存或删除后不会自动轮询，请手动刷新列表以查看最新状态。</p>
+  </section>
+
+  <section class="card" aria-labelledby="about-heading">
+    <h2 id="about-heading">运行说明</h2>
+    <ul class="notes">
+      <li>凭据池化、故障转移与会话亲和由 CPA 负责；插件不实现密钥选择、冷却、重试或健康检查调度。</li>
+      <li>如需会话亲和，请在 CPA 配置中启用 <code>routing.session-affinity: true</code>。</li>
+      <li>密钥保存在 CPA 的 auth 目录（auth-dir）中，不保存在浏览器里。</li>
+      <li>请求头中的会话范围由 CPA 的会话身份与所选 auth 确定性地决定。</li>
+    </ul>
+    <p class="links">
+      <a href="https://github.com/fengwk/cliproxyapi-opencode-provider" target="_blank" rel="noopener noreferrer">项目仓库</a>
+      <a href="https://opencode.ai/docs/go" target="_blank" rel="noopener noreferrer">OpenCode Go 文档</a>
+    </p>
+  </section>
+</main>
+<script src="./ui.js" defer></script>
+</body>
 </html>

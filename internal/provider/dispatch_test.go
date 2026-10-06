@@ -24,7 +24,7 @@ func TestRegisterNegotiatesSchema(t *testing.T) {
 		t.Fatalf("schema version = %d, want %d", reg.SchemaVersion, pluginabi.SchemaVersion)
 	}
 	if !reg.Capabilities.Executor || !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider ||
-		!reg.Capabilities.RequestInterceptor || !reg.Capabilities.ManagementAPI {
+		!reg.Capabilities.RequestInterceptor || !reg.Capabilities.ManagementAPI || !reg.Capabilities.QuotaProvider {
 		t.Fatalf("missing required capability: %+v", reg.Capabilities)
 	}
 	if len(reg.Capabilities.ExecutorInputFormats) != 3 || len(reg.Capabilities.ExecutorOutputFormats) != 3 {

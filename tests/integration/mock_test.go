@@ -22,6 +22,14 @@ type mockCall struct {
 	Body   []byte
 }
 
+// quotaUpstream is an overridable response for GET /v1/usage. The zero value
+// serves the default three-window fixture with HTTP 200.
+type quotaUpstream struct {
+	status      int
+	contentType string
+	body        []byte
+}
+
 // mockOpenCode is a local stand-in for the OpenCode Go upstream. It validates
 // the native request contract and serves deterministic fixtures.
 type mockOpenCode struct {
@@ -31,6 +39,7 @@ type mockOpenCode struct {
 	calls      []mockCall
 	violations []string
 	failedOnce map[string]bool
+	quota      quotaUpstream
 }
 
 var (
@@ -91,6 +100,29 @@ func (m *mockOpenCode) reset() {
 	m.failedOnce = map[string]bool{}
 }
 
+// setQuotaResponse overrides the GET /v1/usage response. A nil body restores the
+// default fixture, and a zero status restores HTTP 200. It is safe to call
+// concurrently with in-flight host requests.
+func (m *mockOpenCode) setQuotaResponse(status int, contentType string, body []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.quota = quotaUpstream{status: status, contentType: contentType, body: append([]byte(nil), body...)}
+}
+
+// resetQuotaResponse restores the default three-window fixture.
+func (m *mockOpenCode) resetQuotaResponse() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.quota = quotaUpstream{}
+}
+
+// quotaResponse returns a copy of the current quota override.
+func (m *mockOpenCode) quotaResponse() quotaUpstream {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.quota
+}
+
 func (m *mockOpenCode) handle(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	call := mockCall{Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(), Body: body}
@@ -101,6 +133,8 @@ func (m *mockOpenCode) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
 		m.handleModels(w, call)
+	case r.Method == http.MethodGet && r.URL.Path == quotaUsagePath:
+		m.handleQuota(w, call)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
 		m.handleNative(w, call, "chat")
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/messages":
@@ -127,6 +161,41 @@ func (m *mockOpenCode) handleModels(w http.ResponseWriter, call mockCall) {
 	}
 	data["data"] = models
 	writeJSON(w, http.StatusOK, data)
+}
+
+// handleQuota validates the quota callback contract and serves the (possibly
+// overridden) /v1/usage payload using the selected credential for auth.
+func (m *mockOpenCode) handleQuota(w http.ResponseWriter, call mockCall) {
+	key := bearerKey(call.Header.Get("Authorization"))
+	if key == "" {
+		m.violationf("GET %s missing Authorization header", quotaUsagePath)
+	} else if !isUpstreamKey(key) {
+		m.violationf("GET %s used unexpected credential %q", quotaUsagePath, key)
+	}
+	if accept := call.Header.Get("Accept"); !strings.Contains(accept, "application/json") {
+		m.violationf("GET %s Accept %q does not request JSON", quotaUsagePath, accept)
+	}
+	ua := call.Header.Get("User-Agent")
+	if ua == "" || strings.HasPrefix(ua, "Go-http-client") || !strings.Contains(ua, pluginID) {
+		m.violationf("GET %s User-Agent %q does not identify the plugin", quotaUsagePath, ua)
+	}
+
+	override := m.quotaResponse()
+	status := override.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	contentType := override.contentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	body := override.body
+	if body == nil {
+		body = defaultQuotaUsageBody()
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 // handleNative validates and answers one native protocol request.

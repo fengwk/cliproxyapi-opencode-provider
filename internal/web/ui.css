@@ -1,1 +1,365 @@
-body { font-family: system-ui, sans-serif; }
+/* OpenCode Go key management UI. No external fonts, no inline styles, CSP friendly. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --text: #1c1f24;
+  --muted: #5c6470;
+  --border: #d5d9e0;
+  --accent: #1f6feb;
+  --accent-text: #ffffff;
+  --ok: #1a7f4b;
+  --warn: #b26a00;
+  --error: #b3261e;
+  --danger-border: #d98a84;
+  --danger-text: #a5251d;
+  --focus: #1f6feb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --panel: #1c2027;
+    --text: #e6e8ec;
+    --muted: #a2aab6;
+    --border: #333a45;
+    --accent: #4c8dff;
+    --accent-text: #0b1220;
+    --ok: #5ad18f;
+    --warn: #e0b25a;
+    --error: #ff8a80;
+    --danger-border: #7a3b36;
+    --danger-text: #ff9d95;
+    --focus: #4c8dff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+}
+
+body {
+  margin: 0;
+  padding: 0 1rem 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+  line-height: 1.6;
+}
+
+main,
+.page-header {
+  max-width: 60rem;
+  margin: 0 auto;
+}
+
+.page-header {
+  padding: 1.75rem 0 0.5rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+}
+
+.subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  word-break: break-word;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: rgba(127, 127, 127, 0.16);
+  padding: 0.05em 0.35em;
+  border-radius: 0.25rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 1.1rem 1.25rem 1.25rem;
+  margin: 1rem 0;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.hint {
+  margin: 0.35rem 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.field {
+  margin: 0.75rem 0;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+input[type="password"],
+input[type="text"],
+textarea {
+  width: 100%;
+  max-width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+
+textarea {
+  min-height: 8rem;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+button {
+  padding: 0.5rem 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button[type="submit"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+button.danger {
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8125rem;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.status {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-left-width: 0.25rem;
+  border-radius: 0.4rem;
+  font-size: 0.875rem;
+  min-height: 1.5rem;
+  word-break: break-word;
+}
+
+.status.info {
+  border-left-color: var(--accent);
+}
+
+.status.ok {
+  border-left-color: var(--ok);
+}
+
+.status.warn {
+  border-left-color: var(--warn);
+  color: var(--warn);
+}
+
+.status.error {
+  border-left-color: var(--error);
+  color: var(--error);
+}
+
+.alert {
+  margin: 0.75rem 0;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.4rem;
+  font-size: 0.875rem;
+}
+
+.alert-error {
+  border: 1px solid var(--error);
+  color: var(--error);
+  background: rgba(179, 38, 30, 0.08);
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+}
+
+/* Without data rows the table can shrink to the viewport instead of scrolling. */
+.table-wrap.is-empty table {
+  min-width: 0;
+}
+
+table {
+  width: 100%;
+  min-width: 46rem;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+caption {
+  caption-side: top;
+  text-align: left;
+}
+
+th,
+td {
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+  word-break: break-word;
+}
+
+thead th {
+  background: rgba(127, 127, 127, 0.12);
+  font-size: 0.78rem;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+td.cell-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+}
+
+td.cell-ok {
+  color: var(--ok);
+}
+
+td.cell-warn {
+  color: var(--warn);
+}
+
+td.empty-cell {
+  text-align: center;
+  color: var(--muted);
+  padding: 1.25rem;
+}
+
+.notes {
+  margin: 0.5rem 0;
+  padding-left: 1.2rem;
+  font-size: 0.875rem;
+}
+
+.notes li {
+  margin: 0.3rem 0;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+}
+
+a {
+  color: var(--accent);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--accent);
+  color: var(--accent-text);
+  padding: 0.45rem 0.8rem;
+  border-radius: 0 0 0.4rem 0;
+  z-index: 10;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+@media (max-width: 640px) {
+  body {
+    padding: 0 0.6rem 2.5rem;
+  }
+
+  .card {
+    padding: 0.9rem 0.85rem 1rem;
+  }
+
+  .section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .actions {
+    gap: 0.5rem;
+  }
+
+  .actions button {
+    flex: 1 1 auto;
+  }
+}

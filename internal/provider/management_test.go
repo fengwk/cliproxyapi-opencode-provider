@@ -271,13 +271,24 @@ func TestResourceRoutesServeAssets(t *testing.T) {
 	if !strings.Contains(string(resp.Body), "<html") {
 		t.Fatalf("ui.html not served: %s", resp.Body)
 	}
-	if resp.Headers.Get("Content-Security-Policy") == "" || resp.Headers.Get("X-Content-Type-Options") != "nosniff" {
-		t.Fatalf("security headers missing: %+v", resp.Headers)
-	}
-	for _, resource := range []string{"/ui.js", "/ui.css"} {
+	// Exact policies prevent accidentally allowing cross-origin embedding or scripts.
+	wantCSP := "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'"
+	for _, resource := range []string{"/ui", "/ui.js", "/ui.css"} {
 		resp := callManagement(t, manager, http.MethodGet, authResourcePath+resource, nil)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("%s status = %d", resource, resp.StatusCode)
+		}
+		if got := resp.Headers.Get("Content-Security-Policy"); got != wantCSP {
+			t.Errorf("%s CSP = %q, want %q", resource, got, wantCSP)
+		}
+		for header, want := range map[string]string{
+			"X-Content-Type-Options": "nosniff",
+			"Cache-Control":          "no-store",
+			"Referrer-Policy":        "no-referrer",
+		} {
+			if got := resp.Headers.Get(header); got != want {
+				t.Errorf("%s %s = %q, want %q", resource, header, got, want)
+			}
 		}
 	}
 	if resp := callManagement(t, manager, http.MethodGet, authResourcePath+"/nope", nil); resp.StatusCode != http.StatusNotFound {

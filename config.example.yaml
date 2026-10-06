@@ -38,7 +38,9 @@ plugins:
       enabled: true
       # OpenCode Go upstream endpoint.
       base-url: "https://opencode.ai/zen/go/v1"
-      # Optional custom models. protocol is one of: openai, claude, openai-response.
+      # Optional protocol route overrides. These do NOT add models: the published
+      # catalog comes only from the authenticated upstream GET <base-url>/models.
+      # protocol is one of: openai, claude, openai-response.
       # models:
       #   - id: "custom-model"
       #     protocol: "openai"

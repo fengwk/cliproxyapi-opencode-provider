@@ -26,7 +26,9 @@ const (
 type Config struct {
 	// BaseURL is the validated upstream base URL (no query/fragment/userinfo).
 	BaseURL string
-	// Routes maps a native model id to a deterministic upstream protocol.
+	// Routes maps a native model id to a deterministic upstream protocol. These
+	// are protocol overrides only: they never add model ids to the published
+	// catalog, which comes solely from the upstream GET /models response.
 	Routes map[string]translator.Format
 }
 

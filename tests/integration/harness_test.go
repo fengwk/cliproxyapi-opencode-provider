@@ -35,7 +35,7 @@ const (
 	keyAlpha  = "fake-key-alpha"
 	keyBeta   = "fake-key-beta"
 
-	// Native model ids exposed by the mock upstream and the plugin snapshot.
+	// Native model ids exposed by the official mock upstream.
 	nativeGLM     = "glm-5.2"
 	nativeMinimax = "minimax-m2.7"
 	nativeGPT     = "gpt-5.6-luna"

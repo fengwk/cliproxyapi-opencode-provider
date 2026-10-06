@@ -130,7 +130,10 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 		m.shutdown()
 		return okEnvelope(struct{}{})
 	case pluginabi.MethodModelStatic:
-		return okEnvelope(pluginapi.ModelResponse{Provider: ProviderID, Models: buildModels(m.config())})
+		// The catalog has no static/embedded content: it is published only from a
+		// successful per-auth upstream GET /models, so an explicit empty list is
+		// returned here even when protocol overrides are configured.
+		return okEnvelope(pluginapi.ModelResponse{Provider: ProviderID, Models: []pluginapi.ModelInfo{}})
 	case pluginabi.MethodModelForAuth:
 		return m.handleModelsForAuth(request)
 	case pluginabi.MethodAuthIdentifier, pluginabi.MethodExecutorIdentifier:
@@ -261,8 +264,20 @@ func (m *Manager) handleModelsForAuth(request []byte) ([]byte, error) {
 	if err := json.Unmarshal(request, &req); err != nil {
 		return mustEnvelope(errorResult("invalid_request", "malformed model discovery request", 0))
 	}
-	key, _ := resolveKey(req.Attributes, req.Metadata, req.StorageJSON)
-	models := m.discoverModels(m.config(), key, req.HostCallbackID)
+	// A missing credential is an auth failure and must not trigger any network
+	// call or fall back to a static list.
+	key, errKey := resolveKey(req.Attributes, req.Metadata, req.StorageJSON)
+	if errKey != nil {
+		return mustEnvelope(resultError(&ProviderError{
+			Code:       "auth_unavailable",
+			Message:    errKey.Error(),
+			HTTPStatus: http.StatusUnauthorized,
+		}))
+	}
+	models, errDiscover := m.discoverModels(m.config(), key, req.HostCallbackID)
+	if errDiscover != nil {
+		return mustEnvelope(resultError(errDiscover))
+	}
 	return okEnvelope(pluginapi.ModelResponse{Provider: ProviderID, Models: models})
 }
 

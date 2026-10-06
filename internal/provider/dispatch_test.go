@@ -3,7 +3,6 @@ package provider
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -93,10 +92,13 @@ func TestUnknownMethod(t *testing.T) {
 	}
 }
 
-// TestStaticModelsCoverFamilies verifies the embedded snapshot is published
-// under the fixed public prefix with deterministic, non-nil ids.
-func TestStaticModelsCoverFamilies(t *testing.T) {
-	manager := newTestManager(newFakeHost())
+// TestStaticModelsAreEmptyWithoutDiscovery verifies the plugin publishes no
+// embedded/static catalog: model.static always returns an explicit empty array
+// under the fixed provider and performs no network call, even when a protocol
+// override is configured.
+func TestStaticModelsAreEmptyWithoutDiscovery(t *testing.T) {
+	host := newFakeHost()
+	manager := configuredManager(t, host, "models:\n  - id: phantom\n    protocol: openai\n")
 	raw, err := manager.HandleCall(pluginabi.MethodModelStatic, nil)
 	if err != nil {
 		t.Fatalf("model.static: %v", err)
@@ -106,23 +108,14 @@ func TestStaticModelsCoverFamilies(t *testing.T) {
 	if resp.Provider != ProviderID {
 		t.Fatalf("provider = %q, want %q", resp.Provider, ProviderID)
 	}
-	if len(resp.Models) == 0 {
-		t.Fatalf("no models in snapshot")
+	if resp.Models == nil {
+		t.Fatalf("models must be an explicit empty array, not null")
 	}
-	found := false
-	for _, model := range resp.Models {
-		if !strings.HasPrefix(model.ID, modelPrefix) {
-			t.Fatalf("model %q missing public prefix", model.ID)
-		}
-		if model.Name == "" {
-			t.Fatalf("model %q missing native name", model.ID)
-		}
-		if strings.Contains(model.ID, "glm") {
-			found = true
-		}
+	if len(resp.Models) != 0 {
+		t.Fatalf("static catalog must be empty, got %d model(s)", len(resp.Models))
 	}
-	if !found {
-		t.Fatalf("snapshot missing expected glm family model")
+	if len(host.requests()) != 0 {
+		t.Fatalf("static catalog must not perform network calls")
 	}
 }
 

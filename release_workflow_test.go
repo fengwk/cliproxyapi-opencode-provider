@@ -61,7 +61,7 @@ func stepByName(steps []workflowStep, name string) (workflowStep, bool) {
 
 // A retry must publish the original tag, not rebuild the current default branch,
 // and the publisher helper must come from the trusted default branch so an old
-// tag never executes its own helper code.
+// tag never executes its own helper code. Runs for one tag must be serialized.
 func TestReleaseRetryPreservesTagAndRepository(t *testing.T) {
 	doc, _ := loadWorkflow(t, ".github/workflows/release.yml")
 	if _, ok := doc.On["workflow_dispatch"]; !ok {
@@ -69,6 +69,11 @@ func TestReleaseRetryPreservesTagAndRepository(t *testing.T) {
 	}
 	if doc.Env["RELEASE_TAG"] != "${{ inputs.tag || github.ref_name }}" {
 		t.Fatal("tag push and manual retry must select the same release tag")
+	}
+	if doc.Concurrency == nil || doc.Concurrency.CancelInProgress ||
+		!strings.Contains(doc.Concurrency.Group, "inputs.tag") ||
+		!strings.Contains(doc.Concurrency.Group, "github.ref_name") {
+		t.Fatal("release runs for one tag must share a non-cancelling concurrency group")
 	}
 	build := doc.Jobs["build"].Steps
 	if len(build) == 0 || !strings.HasPrefix(build[0].Uses, "actions/checkout@") ||

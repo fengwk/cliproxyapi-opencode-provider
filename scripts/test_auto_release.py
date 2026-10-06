@@ -59,6 +59,18 @@ def fail(message):
     return 1
 
 
+def chunk(items, size):
+    size = max(1, int(size))
+    return [items[i:i + size] for i in range(0, len(items), size)] or [[]]
+
+
+def envelope(runs, state):
+    return [
+        {"total_count": len(runs), "workflow_runs": part}
+        for part in chunk(runs, state.get("page_size", 100))
+    ]
+
+
 def main():
     argv = sys.argv[1:]
     log(argv)
@@ -149,7 +161,8 @@ def main():
 
     match = re.fullmatch(r"repos/([^/]+/[^/]+)/actions/workflows/([^/?]+)/runs\?.*", path)
     if match and match.group(1) == repo and match.group(2) == "release.yml":
-        return emit([state.get("release_runs", [])])
+        runs = state.get("release_runs", [])
+        return emit(envelope(runs, state))
 
     match = re.fullmatch(r"repos/([^/]+/[^/]+)/actions/workflows/([^/?]+)", path)
     if match and match.group(1) == repo:
@@ -157,11 +170,11 @@ def main():
 
     match = re.fullmatch(r"repos/([^/]+/[^/]+)/actions/runs\?.*", path)
     if match and match.group(1) == repo:
-        return emit([state.get("ci_runs", [])])
+        return emit(envelope(state.get("ci_runs", []), state))
 
     match = re.fullmatch(r"repos/([^/]+/[^/]+)/releases\?.*", path)
     if match and match.group(1) == repo:
-        return emit([state.get("releases", [])])
+        return emit(chunk(state.get("releases", []), state.get("page_size", 100)))
 
     match = re.fullmatch(r"repos/([^/]+/[^/]+)/git/matching-refs/tags/(.+)", path)
     if match and match.group(1) == repo:
@@ -181,7 +194,8 @@ def main():
 
     match = re.fullmatch(r"repos/([^/]+/[^/]+)/commits/([^/]+)/pulls", path)
     if match and match.group(1) == repo:
-        return emit([state.get("commit_pulls", {}).get(match.group(2), [])])
+        pulls = state.get("commit_pulls", {}).get(match.group(2), [])
+        return emit(chunk(pulls, state.get("page_size", 100)))
 
     match = re.fullmatch(r"repos/([^/]+/[^/]+)/commits/(.+)", path)
     if match and match.group(1) == repo:
@@ -299,14 +313,18 @@ class ControllerTest(unittest.TestCase):
             "conclusion": "success",
             "workflow_id": CI_WORKFLOW_ID,
             "repository": {"full_name": REPO},
+            "head_repository": {"full_name": REPO},
         }
         run.update(overrides)
         return run
 
     @staticmethod
     def pr_dict(sha, branch=WORKFLOW_BRANCH, author="dependabot[bot]", **overrides):
+        # Real shape of GET repos/{owner}/{repo}/commits/{sha}/pulls: there is no
+        # boolean "merged" field; a merge is state=closed plus merged_at.
         pr = {
-            "merged": True,
+            "state": "closed",
+            "merged_at": "2024-01-01T00:00:00Z",
             "merge_commit_sha": sha,
             "base": {"ref": "main"},
             "head": {"ref": branch, "repo": {"full_name": REPO}},
@@ -399,6 +417,16 @@ class ControllerTest(unittest.TestCase):
             self.assertIn(needle, out)
         self.assertEqual(state.get("created_tags", []), [])
         self.assertEqual(state.get("dispatches", []), [])
+
+    @staticmethod
+    def ci_dispatches(final):
+        return [args for args in final.get("dispatches", []) if any("ci.yml" in t for t in args)]
+
+    @staticmethod
+    def release_dispatches(final):
+        return [
+            args for args in final.get("dispatches", []) if any("release.yml" in t for t in args)
+        ]
 
     def test_single_dependency_bump_creates_tag_and_dispatches(self):
         base, head = self.standard_repo()
@@ -567,7 +595,7 @@ class ControllerTest(unittest.TestCase):
         )
         self.assert_skip(
             self.run_controller(state, env={"CI_RUN_ID": "555", "EXPECTED_HEAD_SHA": head}),
-            "another repository",
+            "same-repo default-branch ci run",
         )
 
     def test_event_run_pr_event_is_skipped(self):
@@ -581,7 +609,7 @@ class ControllerTest(unittest.TestCase):
         )
         self.assert_skip(
             self.run_controller(state, env={"CI_RUN_ID": "555", "EXPECTED_HEAD_SHA": head}),
-            "not a push",
+            "same-repo default-branch ci run",
         )
 
     def test_event_run_failed_conclusion_is_skipped(self):
@@ -629,7 +657,9 @@ class ControllerTest(unittest.TestCase):
 
     # -- discovery selection ----------------------------------------------- #
 
-    def test_discovery_without_successful_ci_run_is_skipped(self):
+    def test_schedule_dispatches_missing_main_ci_for_eligible_range(self):
+        # The automerge main-ci dispatch can fail after a GITHUB_TOKEN merge; a
+        # schedule must be able to re-request ci for an eligible range.
         base, head = self.standard_repo()
         state = self.base_state(
             main_sha=head,
@@ -638,7 +668,117 @@ class ControllerTest(unittest.TestCase):
             commit_pulls={head: [self.pr_dict(head)]},
             ci_runs=[self.run_dict(head, conclusion="failure")],
         )
-        self.assert_skip(self.run_controller(state), "no successful full ci run")
+        code, out, err, final = self.run_controller(state)
+        self.assertEqual(code, 0, err)
+        self.assertIn("dispatched the main ci run", out)
+        self.assertEqual(final.get("created_tags", []), [])
+        self.assertEqual(self.release_dispatches(final), [])
+        ci = self.ci_dispatches(final)
+        self.assertEqual(len(ci), 1)
+        self.assertIn("--ref", ci[0])
+        self.assertIn("main", ci[0])
+
+    def test_schedule_waits_for_active_main_ci(self):
+        base, head = self.standard_repo()
+        state = self.base_state(
+            main_sha=head,
+            releases=[self.published_release()],
+            commit_resolve={"v0.1.0": base, base: base, head: head},
+            commit_pulls={head: [self.pr_dict(head)]},
+            ci_runs=[self.run_dict(head, status="in_progress", conclusion=None)],
+        )
+        self.assert_skip(self.run_controller(state), "already active")
+
+    def test_schedule_does_not_dispatch_ci_for_ineligible_range(self):
+        base = self.commit({"go.mod": GO_MOD_BASE}, "base")
+        self.git("tag", "v0.1.0")
+        head = self.commit({"README.md": "# manual\n"}, "manual")
+        state = self.base_state(
+            main_sha=head,
+            releases=[self.published_release()],
+            commit_resolve={"v0.1.0": base, base: base, head: head},
+            commit_pulls={head: [self.pr_dict(head, branch="feature/x", author="octocat")]},
+            ci_runs=[],
+        )
+        self.assert_skip(self.run_controller(state), "not an eligible dependency update")
+
+    def test_schedule_does_not_dispatch_ci_for_released_sha(self):
+        base, head = self.standard_repo()
+        state = self.base_state(
+            main_sha=head,
+            releases=[self.published_release("v0.1.1")],
+            commit_resolve={"v0.1.1": head, base: base, head: head},
+            commit_pulls={},
+            ci_runs=[],
+        )
+        self.assert_skip(self.run_controller(state), "no new commits")
+
+    def test_discovery_finds_main_ci_run_across_pages(self):
+        base = self.commit({"go.mod": GO_MOD_BASE, "go.sum": "a\n"}, "base")
+        self.git("tag", "v0.1.0")
+        first = self.commit({"go.mod": GO_MOD_BUMP, "go.sum": "b\n"}, "bump1")
+        head = self.commit({"go.mod": GO_MOD_BUMP2, "go.sum": "c\n"}, "bump2")
+        state = self.base_state(
+            main_sha=head,
+            page_size=1,
+            releases=[self.published_release()],
+            commit_resolve={"v0.1.0": base, base: base, first: first, head: head},
+            commit_pulls={first: [self.pr_dict(first)], head: [self.pr_dict(head)]},
+            ci_runs=[self.run_dict(first, run_id=1), self.run_dict(head, run_id=2)],
+        )
+        code, out, err, final = self.run_controller(state)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(final.get("created_tags"), [["v0.1.1", head]])
+
+    def test_active_release_run_detected_across_pages(self):
+        base, head = self.standard_repo()
+        state = self.base_state(
+            main_sha=head,
+            page_size=1,
+            releases=[self.published_release()],
+            tag_refs={"v0.1.1": {"sha": head, "type": "commit"}},
+            commit_resolve={"v0.1.0": base, base: base, head: head},
+            commit_pulls={head: [self.pr_dict(head)]},
+            ci_runs=[self.run_dict(head)],
+            release_runs=[
+                {"display_title": "release v0.0.9", "status": "completed", "conclusion": "failure"},
+                {"display_title": "release v0.1.1", "status": "in_progress", "conclusion": None},
+            ],
+        )
+        self.assert_skip(self.run_controller(state), "still running")
+
+    def test_open_dependabot_pr_is_skipped(self):
+        base, head = self.standard_repo()
+        state = self.base_state(
+            main_sha=head,
+            releases=[self.published_release()],
+            commit_resolve={"v0.1.0": base, base: base, head: head},
+            commit_pulls={head: [self.pr_dict(head, state="open", merged_at=None)]},
+            ci_runs=[self.run_dict(head)],
+        )
+        self.assert_skip(self.run_controller(state), "no unique merged same-repo Dependabot")
+
+    def test_closed_unmerged_dependabot_pr_is_skipped(self):
+        base, head = self.standard_repo()
+        state = self.base_state(
+            main_sha=head,
+            releases=[self.published_release()],
+            commit_resolve={"v0.1.0": base, base: base, head: head},
+            commit_pulls={head: [self.pr_dict(head, merged_at=None)]},
+            ci_runs=[self.run_dict(head)],
+        )
+        self.assert_skip(self.run_controller(state), "no unique merged same-repo Dependabot")
+
+    def test_malformed_merged_at_is_skipped(self):
+        base, head = self.standard_repo()
+        state = self.base_state(
+            main_sha=head,
+            releases=[self.published_release()],
+            commit_resolve={"v0.1.0": base, base: base, head: head},
+            commit_pulls={head: [self.pr_dict(head, merged_at="yesterday")]},
+            ci_runs=[self.run_dict(head)],
+        )
+        self.assert_skip(self.run_controller(state), "no unique merged same-repo Dependabot")
 
     def test_discovery_ignores_stale_run_and_picks_matching(self):
         base = self.commit({"go.mod": GO_MOD_BASE}, "base")
@@ -655,6 +795,33 @@ class ControllerTest(unittest.TestCase):
         code, out, err, final = self.run_controller(state)
         self.assertEqual(code, 0, err)
         self.assertEqual(final.get("created_tags"), [["v0.1.1", head]])
+
+    def test_discovery_ignores_untrusted_ci_runs(self):
+        base, head = self.standard_repo()
+        mutations = {
+            "foreign repository": {"repository": {"full_name": "fork/repo"}},
+            "foreign head repository": {"head_repository": {"full_name": "fork/repo"}},
+            "wrong workflow id": {"workflow_id": 999},
+            "wrong path": {"path": ".github/workflows/other.yml"},
+            "wrong name": {"name": "other"},
+            "wrong branch": {"head_branch": "feature/x"},
+        }
+        for label, override in mutations.items():
+            with self.subTest(label):
+                state = self.base_state(
+                    main_sha=head,
+                    releases=[self.published_release()],
+                    commit_resolve={"v0.1.0": base, base: base, head: head},
+                    commit_pulls={head: [self.pr_dict(head)]},
+                    ci_runs=[self.run_dict(head, **override)],
+                )
+                code, out, err, final = self.run_controller(state)
+                self.assertEqual(code, 0, err)
+                # The untrusted run never authorizes a release; the eligible,
+                # unpublished range falls back to a fresh ci dispatch instead.
+                self.assertEqual(final.get("created_tags", []), [])
+                self.assertEqual(len(self.ci_dispatches(final)), 1)
+                self.assertEqual(self.release_dispatches(final), [])
 
     # -- release base problems --------------------------------------------- #
 
@@ -865,7 +1032,7 @@ class ControllerTest(unittest.TestCase):
         )
         self.assert_skip(
             self.run_controller(state, env={"CI_RUN_ID": "555", "EXPECTED_HEAD_SHA": head}),
-            "another repository",
+            "same-repo default-branch ci run",
         )
 
     def test_missing_gh_repo_fails(self):

@@ -23,6 +23,13 @@ on:
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
+# A tag push and a workflow_dispatch retry for the same tag must never publish
+# (or recover a managed draft) concurrently. cancel-in-progress stays false so an
+# in-flight publish is never aborted mid-recovery.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

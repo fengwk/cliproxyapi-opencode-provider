@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 import zipfile
 
 SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "publish_release.py")
@@ -31,6 +32,7 @@ FAKE_GH = r'''#!/usr/bin/env python3
 """Fake gh for the publisher: records release mutations, honours failure knobs."""
 import json
 import os
+import re
 import sys
 
 
@@ -55,10 +57,34 @@ def main():
     state = load_state()
 
     if argv[:1] == ["api"]:
+        method = "GET"
+        if "--method" in argv:
+            method = argv[argv.index("--method") + 1]
         path = next((a for a in argv if a.startswith("repos/")), "")
-        if path.endswith("/commits/" + state["tag"]):
+        if method == "GET" and path.endswith("/commits/" + state["tag"]):
             sys.stdout.write(json.dumps({"sha": state["commit"]}))
             return 0
+        if method == "GET" and path.endswith("/releases/tags/" + state["tag"]):
+            release = state.get("existing_release")
+            if release is None:
+                sys.stderr.write("gh: Not Found (HTTP 404)\n")
+                return 1
+            sys.stdout.write(json.dumps(release))
+            return 0
+        if method == "DELETE":
+            match = re.fullmatch(r"repos/[^/]+/[^/]+/releases/(\d+)", path)
+            current = state.get("existing_release")
+            if match and current is not None and str(current.get("id")) == match.group(1):
+                if state.get("delete_fail"):
+                    sys.stderr.write("delete failed\n")
+                    return 1
+                state["existing_release"] = None
+                state.setdefault("deletes", []).append(argv)
+                save_state(state)
+                sys.stdout.write("{}")
+                return 0
+            sys.stderr.write("release not found\n")
+            return 1
         sys.stderr.write("unsupported api path\n")
         return 1
 
@@ -68,29 +94,15 @@ def main():
 
     action = argv[1] if len(argv) > 1 else ""
     tag = argv[2] if len(argv) > 2 else ""
-    if action == "view":
-        release = state.get("existing_release")
-        if release is None or release.get("tagName") != tag:
-            sys.stderr.write("release not found\n")
-            return 1
-        sys.stdout.write(json.dumps(release))
-        return 0
-    if action == "delete":
-        if state.get("delete_fail"):
-            sys.stderr.write("delete failed\n")
-            return 1
-        state["existing_release"] = None
-        state.setdefault("deletes", []).append(argv)
-        save_state(state)
-        return 0
     if action == "create":
         if state.get("create_fail"):
             sys.stderr.write("create failed\n")
             return 1
         state["existing_release"] = {
-            "tagName": tag,
-            "isDraft": True,
-            "isPrerelease": False,
+            "id": state.get("next_id", 101),
+            "tag_name": tag,
+            "draft": True,
+            "prerelease": False,
             "author": {"login": "github-actions[bot]"},
         }
         state.setdefault("creates", []).append(argv)
@@ -102,7 +114,7 @@ def main():
             return 1
         release = state.get("existing_release")
         if release is not None:
-            release["isDraft"] = False
+            release["draft"] = False
         state.setdefault("edits", []).append(argv)
         save_state(state)
         return 0
@@ -125,7 +137,8 @@ def archive_name(version, goos, goarch):
 
 
 def write_archive(path, goos, goarch, ext, *, version=VERSION, commit=COMMIT, plugin_id=PLUGIN_ID,
-                  metadata_override=None, extra_member=None):
+                  metadata_override=None, extra_member=None, metadata_raw=None,
+                  duplicate_metadata=False):
     metadata = {
         "id": plugin_id,
         "version": version,
@@ -136,12 +149,15 @@ def write_archive(path, goos, goarch, ext, *, version=VERSION, commit=COMMIT, pl
     }
     if metadata_override:
         metadata.update(metadata_override)
+    body = metadata_raw if metadata_raw is not None else json.dumps(metadata)
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(PLUGIN_ID + "." + ext, "fake dynamic library\n")
         archive.writestr("LICENSE", "license\n")
         archive.writestr("NOTICE", "notice\n")
         archive.writestr("README.md", "# readme\n")
-        archive.writestr("metadata.json", json.dumps(metadata))
+        archive.writestr("metadata.json", body)
+        if duplicate_metadata:
+            archive.writestr("metadata.json", body)
         if extra_member:
             archive.writestr(extra_member, "extra\n")
 
@@ -163,7 +179,8 @@ class PublishTest(unittest.TestCase):
         os.makedirs(self.assets)
 
     def write_assets(self, *, version=VERSION, commit=COMMIT, targets=TARGETS, plugin_id=PLUGIN_ID,
-                     metadata_override=None, extra_member=None, write_checksums=True,
+                     metadata_override=None, extra_member=None, metadata_raw=None,
+                     duplicate_metadata=False, write_checksums=True,
                      corrupted_checksum=False, omit_checksum_for=None):
         archives = []
         for goos, goarch, ext in targets:
@@ -178,6 +195,8 @@ class PublishTest(unittest.TestCase):
                 plugin_id=plugin_id,
                 metadata_override=metadata_override,
                 extra_member=extra_member,
+                metadata_raw=metadata_raw,
+                duplicate_metadata=duplicate_metadata,
             )
             archives.append(path)
         if write_checksums:
@@ -291,14 +310,19 @@ class PublishTest(unittest.TestCase):
         self.assertIn("missing", err)
         self.assertEqual(final.get("creates", []), [])
 
+    @staticmethod
+    def release_record(draft, author="github-actions[bot]", release_id=101, tag=TAG):
+        return {
+            "id": release_id,
+            "tag_name": tag,
+            "draft": draft,
+            "prerelease": False,
+            "author": {"login": author},
+        }
+
     def test_already_published_is_noop(self):
         self.write_assets()
-        published = {
-            "tagName": TAG,
-            "isDraft": False,
-            "isPrerelease": False,
-            "author": {"login": "github-actions[bot]"},
-        }
+        published = self.release_record(draft=False)
         code, out, err, final = self.run_publisher(self.base_state(existing_release=published))
         self.assertEqual(code, 0, err)
         self.assertEqual(final.get("creates", []), [])
@@ -307,29 +331,20 @@ class PublishTest(unittest.TestCase):
 
     def test_owned_partial_draft_is_recovered_without_touching_tag(self):
         self.write_assets()
-        draft = {
-            "tagName": TAG,
-            "isDraft": True,
-            "isPrerelease": False,
-            "author": {"login": "github-actions[bot]"},
-        }
+        draft = self.release_record(draft=True)
         code, out, err, final = self.run_publisher(self.base_state(existing_release=draft))
         self.assertEqual(code, 0, err)
         deletes = final.get("deletes", [])
         self.assertEqual(len(deletes), 1)
-        # The tag must never be deleted as part of draft recovery.
+        # Deletion is by immutable id and never deletes the tag.
+        self.assertTrue(self.call_has(deletes[0], "/releases/101"))
         self.assertNotIn("--cleanup-tag", deletes[0])
         self.assertEqual(len(final.get("creates", [])), 1)
         self.assertEqual(len(final.get("edits", [])), 1)
 
     def test_human_draft_is_refused(self):
         self.write_assets()
-        draft = {
-            "tagName": TAG,
-            "isDraft": True,
-            "isPrerelease": False,
-            "author": {"login": "octocat"},
-        }
+        draft = self.release_record(draft=True, author="octocat")
         code, out, err, final = self.run_publisher(self.base_state(existing_release=draft))
         self.assertEqual(code, 1)
         self.assertIn("owned by", err)
@@ -356,29 +371,61 @@ class PublishTest(unittest.TestCase):
         # The draft exists but is not published.
         self.assertEqual(len(final.get("creates", [])), 1)
         self.assertEqual(final.get("edits", []), [])
-        self.assertTrue(final["existing_release"]["isDraft"])
+        self.assertTrue(final["existing_release"]["draft"])
 
         # Retry: the managed draft is recreated (never the tag) and published.
         final["edit_fail"] = False
         code, out, err, final = self.run_publisher(final, reset=False)
         self.assertEqual(code, 0, err)
         self.assertEqual(len(final.get("deletes", [])), 1)
-        self.assertFalse(final["existing_release"]["isDraft"])
+        self.assertFalse(final["existing_release"]["draft"])
 
     def test_owned_draft_delete_failure_blocks(self):
         self.write_assets()
-        draft = {
-            "tagName": TAG,
-            "isDraft": True,
-            "isPrerelease": False,
-            "author": {"login": "github-actions[bot]"},
-        }
+        draft = self.release_record(draft=True)
         code, out, err, final = self.run_publisher(
             self.base_state(existing_release=draft, delete_fail=True)
         )
         self.assertEqual(code, 1)
         self.assertEqual(final.get("creates", []), [])
         self.assertEqual(final.get("edits", []), [])
+
+    def test_duplicate_metadata_member_blocks_publication(self):
+        # A set of member names would accept a duplicated metadata.json.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # zipfile warns about the duplicate
+            self.write_assets(duplicate_metadata=True)
+        code, out, err, final = self.run_publisher(self.base_state())
+        self.assertEqual(code, 1)
+        self.assertIn("layout", err)
+        self.assertEqual(final.get("creates", []), [])
+
+    def test_non_object_metadata_blocks_publication(self):
+        self.write_assets(metadata_raw="[1, 2, 3]")
+        code, out, err, final = self.run_publisher(self.base_state())
+        self.assertEqual(code, 1)
+        self.assertIn("not an object", err)
+        self.assertEqual(final.get("creates", []), [])
+
+    def test_checksum_path_entry_blocks_publication(self):
+        self.write_assets()
+        with open(os.path.join(self.assets, "checksums.txt"), "a", encoding="utf-8") as handle:
+            handle.write("%s  ../evil.zip\n" % ("0" * 64))
+        code, out, err, final = self.run_publisher(self.base_state())
+        self.assertEqual(code, 1)
+        self.assertIn("unexpected entry", err)
+        self.assertEqual(final.get("creates", []), [])
+
+    def test_duplicate_checksum_entry_blocks_publication(self):
+        self.write_assets()
+        name = archive_name(VERSION, "linux", "amd64")
+        digest = sha256(os.path.join(self.assets, name))
+        with open(os.path.join(self.assets, "checksums.txt"), "a", encoding="utf-8") as handle:
+            handle.write("%s  %s\n" % (digest, name))
+        code, out, err, final = self.run_publisher(self.base_state())
+        self.assertEqual(code, 1)
+        self.assertIn("duplicate entry", err)
+        self.assertEqual(final.get("creates", []), [])
 
     def test_bad_tag_is_refused(self):
         self.write_assets()

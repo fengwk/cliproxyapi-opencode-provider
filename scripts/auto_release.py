@@ -40,6 +40,9 @@ import dependency_policy  # noqa: E402  (local module)
 
 TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 WORKFLOW_PATH_RE = re.compile(r"^\.github/workflows/[^/]+\.(?:yml|yaml)$")
+# GitHub returns merge timestamps as ``2024-01-01T00:00:00Z`` (optionally with
+# fractional seconds or an offset).
+_ISO8601_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 CI_PATH = ".github/workflows/ci.yml"
 CI_NAME = "ci"
 RELEASE_WORKFLOW = "release.yml"
@@ -79,6 +82,7 @@ class GitHub:
     def __init__(self, repo, bin_path):
         self.repo = repo
         self.bin = bin_path
+        self._ci_workflow_id = None
 
     def _gh(self, args):
         proc = subprocess.run([self.bin] + list(args), capture_output=True, text=True)
@@ -88,23 +92,22 @@ class GitHub:
         return proc.stdout
 
     def _get(self, path, paginate=False):
+        """Return the parsed JSON payload for an API path.
+
+        With ``paginate`` the payload is the list of page responses gh emits for
+        ``--paginate --slurp``. The shape depends on the endpoint: array
+        endpoints yield a page per list element, while the actions-runs
+        endpoints yield an object envelope ``{total_count, workflow_runs}`` per
+        page. Callers unpack the endpoint-specific shape.
+        """
         args = ["api", path]
         if paginate:
             args += ["--paginate", "--slurp"]
         out = self._gh(args)
         try:
-            data = json.loads(out) if out.strip() else None
+            return json.loads(out) if out.strip() else None
         except ValueError:
             raise Failure("gh returned malformed JSON for %s" % path)
-        if paginate:
-            flat = []
-            for page in data or []:
-                if isinstance(page, list):
-                    flat.extend(page)
-                else:
-                    flat.append(page)
-            return flat
-        return data
 
     def default_branch(self):
         data = self._get("repos/" + self.repo)
@@ -121,22 +124,34 @@ class GitHub:
         return sha
 
     def ci_workflow_id(self):
-        data = self._get("repos/%s/actions/workflows/ci.yml" % self.repo)
-        return (data or {}).get("id")
+        if self._ci_workflow_id is None:
+            data = self._get("repos/%s/actions/workflows/ci.yml" % self.repo)
+            self._ci_workflow_id = (data or {}).get("id")
+        return self._ci_workflow_id
 
     def run(self, run_id):
         return self._get("repos/%s/actions/runs/%s" % (self.repo, run_id))
 
     def runs(self, branch):
-        data = self._get(
+        pages = self._get(
             "repos/%s/actions/runs?branch=%s&per_page=100" % (self.repo, branch), paginate=True
         )
-        return [run for run in data or [] if isinstance(run, dict)]
+        runs = []
+        for page in pages or []:
+            if isinstance(page, dict):
+                runs.extend(page.get("workflow_runs") or [])
+        return [run for run in runs if isinstance(run, dict)]
 
     def releases(self):
-        data = self._get("repos/%s/releases?per_page=100" % self.repo, paginate=True)
+        pages = self._get("repos/%s/releases?per_page=100" % self.repo, paginate=True)
+        raw_releases = []
+        for page in pages or []:
+            if isinstance(page, list):
+                raw_releases.extend(page)
+            elif isinstance(page, dict):
+                raw_releases.append(page)
         releases = []
-        for raw in data or []:
+        for raw in raw_releases:
             if not isinstance(raw, dict):
                 continue
             releases.append(
@@ -170,17 +185,25 @@ class GitHub:
         return sha
 
     def commit_pulls(self, sha):
-        data = self._get("repos/%s/commits/%s/pulls" % (self.repo, sha), paginate=True)
-        return [pr for pr in data or [] if isinstance(pr, dict)]
+        pages = self._get("repos/%s/commits/%s/pulls" % (self.repo, sha), paginate=True)
+        pulls = []
+        for page in pages or []:
+            if isinstance(page, list):
+                pulls.extend(page)
+        return [pr for pr in pulls if isinstance(pr, dict)]
 
     def release_runs(self, tag):
-        data = self._get(
+        pages = self._get(
             "repos/%s/actions/workflows/%s/runs?per_page=100" % (self.repo, RELEASE_WORKFLOW),
             paginate=True,
         )
+        runs = []
+        for page in pages or []:
+            if isinstance(page, dict):
+                runs.extend(page.get("workflow_runs") or [])
         return [
             run
-            for run in data or []
+            for run in runs
             if isinstance(run, dict) and _tag_in_title(run.get("display_title"), tag)
         ]
 
@@ -223,6 +246,9 @@ class GitHub:
                 "tag=" + tag,
             ]
         )
+
+    def dispatch_ci(self, branch):
+        self._gh(["workflow", "run", "ci.yml", "--repo", self.repo, "--ref", branch])
 
 
 class LocalRepo:
@@ -267,56 +293,81 @@ class LocalRepo:
 # --------------------------------------------------------------------------- #
 
 
-def resolve_candidate(gh, default_branch):
-    """Return the validated commit the new release must be bound to."""
-    run_id = os.environ.get("CI_RUN_ID", "").strip()
-    expected = os.environ.get("EXPECTED_HEAD_SHA", "").strip()
-    if run_id or expected:
-        if not (run_id and expected):
-            raise Failure("CI_RUN_ID and EXPECTED_HEAD_SHA must be provided together")
-        verify_ci_run(gh, default_branch, gh.run(run_id), expected)
-        return expected
-    # Schedule / manual dispatch: derive the current default branch head and
-    # require its own successful full ci run. Query fields are never trusted;
-    # every run is filtered client-side.
-    main_sha = gh.main_sha(default_branch)
-    if find_ci_run(gh, default_branch, main_sha) is None:
-        raise Skip("no successful full ci run for the current default branch head %s" % main_sha[:12])
-    return main_sha
+def _trusted_ci_run(gh, run, default_branch, workflow_id):
+    """The trust boundary a ci run must satisfy, shared by every selector."""
+    return (
+        run.get("name") == CI_NAME
+        and run.get("path") == CI_PATH
+        and run.get("workflow_id") == workflow_id
+        and (run.get("repository") or {}).get("full_name") == gh.repo
+        and (run.get("head_repository") or {}).get("full_name") == gh.repo
+        and run.get("head_branch") == default_branch
+        and run.get("event") in CI_EVENTS
+    )
 
 
 def verify_ci_run(gh, default_branch, run, expected):
     if not isinstance(run, dict):
         raise Skip("the triggering ci run could not be read")
-    if run.get("name") != CI_NAME or run.get("path") != CI_PATH:
-        raise Skip("the triggering run is not the ci workflow")
+    if not _trusted_ci_run(gh, run, default_branch, gh.ci_workflow_id()):
+        raise Skip("the triggering run is not a same-repo default-branch ci run")
     if run.get("head_sha") != expected:
         raise Skip("the triggering run does not match EXPECTED_HEAD_SHA")
-    if run.get("workflow_id") != gh.ci_workflow_id():
-        raise Skip("the triggering run does not match the ci workflow id")
-    if (run.get("repository") or {}).get("full_name") != gh.repo:
-        raise Skip("the triggering run is from another repository")
-    if run.get("head_branch") != default_branch:
-        raise Skip("the triggering run is not on the default branch")
-    if run.get("event") not in CI_EVENTS:
-        raise Skip("the triggering run is not a push or workflow_dispatch run")
     if run.get("status") != "completed" or run.get("conclusion") != "success":
         raise Skip("the triggering run did not complete successfully")
 
 
 def find_ci_run(gh, default_branch, sha):
+    workflow_id = gh.ci_workflow_id()
     for run in gh.runs(default_branch):
         if (
-            run.get("name") == CI_NAME
-            and run.get("path") == CI_PATH
-            and run.get("head_branch") == default_branch
+            _trusted_ci_run(gh, run, default_branch, workflow_id)
             and run.get("head_sha") == sha
-            and run.get("event") in CI_EVENTS
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
         ):
             return run
     return None
+
+
+def find_active_ci_run(gh, default_branch, sha):
+    workflow_id = gh.ci_workflow_id()
+    for run in gh.runs(default_branch):
+        if (
+            _trusted_ci_run(gh, run, default_branch, workflow_id)
+            and run.get("head_sha") == sha
+            and run.get("status") in ACTIVE_STATUSES
+        ):
+            return run
+    return None
+
+
+def attempt_ci_recovery(gh, local, default_branch, candidate):
+    """Dispatch a fresh main ci run for an eligible, unpublished dependency range.
+
+    Merges performed with ``GITHUB_TOKEN`` do not emit a ``push`` event, so the
+    automerge workflow dispatches main ci explicitly. When that dispatch failed
+    the default branch has no successful run and a schedule would otherwise wait
+    forever. A new run may only be requested for a range that every real
+    Dependabot/policy check accepts and that has a non-empty net change; an
+    ineligible or already-released commit is never re-run, and a tag is never
+    created here.
+    """
+    if not local.has_commit(candidate):
+        raise Skip("candidate commit %s is not available in the trusted checkout" % candidate[:12])
+    latest = latest_release(gh)
+    if latest is None:
+        raise Skip("no published stable release to base the next patch version on")
+    last_tag, last_commit = latest
+    if not local.has_commit(last_commit):
+        raise Skip("latest release %s is not available in the trusted checkout" % last_tag)
+    if not local.is_ancestor(last_commit, candidate):
+        raise Skip("latest release %s is not an ancestor of the candidate" % last_tag)
+    ensure_release_range(gh, local, default_branch, last_commit, candidate)
+    if find_active_ci_run(gh, default_branch, candidate) is not None:
+        raise Skip("a ci run for %s is already active; waiting" % candidate[:12])
+    gh.dispatch_ci(default_branch)
+    raise Skip("dispatched the main ci run for %s; waiting for it to succeed" % candidate[:12])
 
 
 # --------------------------------------------------------------------------- #
@@ -353,6 +404,18 @@ def bump_patch(tag):
     return "v%d.%d.%d" % (int(match.group(1)), int(match.group(2)), int(match.group(3)) + 1)
 
 
+def _pull_request_merged(pr):
+    """REST ``commits/{sha}/pulls`` has no boolean ``merged`` field.
+
+    A merged pull request is ``state == "closed"`` with a valid ISO-8601
+    ``merged_at``; an unmerged closed pull request has ``merged_at: null``.
+    """
+    if pr.get("state") != "closed":
+        return False
+    merged_at = pr.get("merged_at")
+    return isinstance(merged_at, str) and _ISO8601_RE.match(merged_at) is not None
+
+
 def eligible_pull_request(gh, default_branch, sha):
     """Pick the unique merged same-repo Dependabot PR whose merge is ``sha``."""
     matches = []
@@ -360,7 +423,7 @@ def eligible_pull_request(gh, default_branch, sha):
         head = pr.get("head") or {}
         base = pr.get("base") or {}
         head_ref = head.get("ref") or ""
-        if pr.get("merged") is not True:
+        if not _pull_request_merged(pr):
             continue
         if pr.get("merge_commit_sha") != sha:
             continue
@@ -438,7 +501,22 @@ def release_run_state(runs):
 
 def reconcile(gh, local):
     default_branch = gh.default_branch()
-    candidate = resolve_candidate(gh, default_branch)
+    run_id = os.environ.get("CI_RUN_ID", "").strip()
+    expected = os.environ.get("EXPECTED_HEAD_SHA", "").strip()
+    if run_id or expected:
+        if not (run_id and expected):
+            raise Failure("CI_RUN_ID and EXPECTED_HEAD_SHA must be provided together")
+        verify_ci_run(gh, default_branch, gh.run(run_id), expected)
+        candidate = expected
+    else:
+        # Schedule / manual dispatch: derive the current default branch head.
+        # A successful full ci run is required before any release work; when it
+        # is missing (e.g. the automerge main-ci dispatch failed) only an
+        # eligible, unpublished dependency range may trigger a fresh run.
+        candidate = gh.main_sha(default_branch)
+        if find_ci_run(gh, default_branch, candidate) is None:
+            attempt_ci_recovery(gh, local, default_branch, candidate)
+            return
 
     # The candidate must still be the current default branch head, otherwise a
     # newer push (with its own ci run) owns the release.

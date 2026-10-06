@@ -78,8 +78,11 @@ def validate_archive(path, version, commit, goos, goarch, ext):
     name = os.path.basename(path)
     try:
         with zipfile.ZipFile(path) as archive:
+            members = archive.namelist()
             expected = STATIC_MEMBERS | {PLUGIN_ID + "." + ext}
-            if set(archive.namelist()) != expected:
+            # ``set`` alone would accept a duplicated member (e.g. two
+            # metadata.json entries), so require an exact unique count as well.
+            if len(members) != len(expected) or set(members) != expected:
                 raise PublishError("%s has an unexpected archive layout" % name)
             try:
                 metadata = json.loads(archive.read("metadata.json").decode("utf-8"))
@@ -87,6 +90,8 @@ def validate_archive(path, version, commit, goos, goarch, ext):
                 raise PublishError("%s has malformed metadata.json" % name)
     except zipfile.BadZipFile:
         raise PublishError("%s is not a valid zip archive" % name)
+    if not isinstance(metadata, dict):
+        raise PublishError("%s metadata.json is not an object" % name)
     if metadata.get("id") != PLUGIN_ID:
         raise PublishError("%s metadata id does not match the plugin" % name)
     if metadata.get("version") != version:
@@ -100,6 +105,7 @@ def validate_archive(path, version, commit, goos, goarch, ext):
 def validate_checksums(path, archives):
     if not os.path.isfile(path):
         raise PublishError("checksums.txt is missing")
+    expected = {os.path.basename(archive) for archive in archives}
     recorded = {}
     with open(path, "r", encoding="utf-8") as handle:
         for line in handle:
@@ -108,13 +114,20 @@ def validate_checksums(path, archives):
                 continue
             if len(parts) != 2:
                 raise PublishError("checksums.txt is malformed")
-            recorded[parts[1]] = parts[0].lower()
+            digest, entry = parts[0].lower(), parts[1]
+            # Rejecting any entry that is not exactly one expected file also
+            # rejects duplicate spellings, directories and path escapes.
+            if entry not in expected:
+                raise PublishError("checksums.txt references an unexpected entry %r" % entry)
+            if entry in recorded:
+                raise PublishError("checksums.txt has a duplicate entry for %s" % entry)
+            recorded[entry] = digest
+    missing = sorted(expected - set(recorded))
+    if missing:
+        raise PublishError("checksums.txt has no entry for %s" % ", ".join(missing))
     for archive in archives:
         name = os.path.basename(archive)
-        digest = recorded.get(name)
-        if digest is None:
-            raise PublishError("checksums.txt has no entry for %s" % name)
-        if digest != sha256(archive):
+        if recorded[name] != sha256(archive):
             raise PublishError("checksum mismatch for %s" % name)
 
 
@@ -135,29 +148,40 @@ def validate_assets(assets_dir, version, commit):
 
 
 def get_release(bin_path, repo, tag):
+    """Return the release identity for ``tag`` or None when it does not exist.
+
+    The full API object is used (rather than ``gh release view``) because the
+    immutable release ``id`` is needed to delete a managed draft without any
+    risk of deleting a different release for the same tag.
+    """
     proc = subprocess.run(
-        [
-            bin_path,
-            "release",
-            "view",
-            tag,
-            "--repo",
-            repo,
-            "--json",
-            "tagName,isDraft,isPrerelease,author",
-        ],
+        [bin_path, "api", "repos/%s/releases/tags/%s" % (repo, tag)],
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
         message = ((proc.stderr or "") + (proc.stdout or "")).lower()
-        if "not found" in message or "404" in message:
+        if "404" in message or "not found" in message:
             return None
         raise PublishError("could not read release %s" % tag)
     try:
-        return json.loads(proc.stdout)
+        raw = json.loads(proc.stdout)
     except ValueError:
         raise PublishError("malformed release response for %s" % tag)
+    if not isinstance(raw, dict):
+        raise PublishError("malformed release response for %s" % tag)
+    return {
+        "id": raw.get("id"),
+        "tag": raw.get("tag_name"),
+        "draft": bool(raw.get("draft")),
+        "prerelease": bool(raw.get("prerelease")),
+        "author": (raw.get("author") or {}).get("login"),
+    }
+
+
+def delete_release(bin_path, repo, release_id):
+    """Delete the draft release by immutable id (never the tag)."""
+    run_gh(bin_path, ["api", "--method", "DELETE", "repos/%s/releases/%s" % (repo, release_id)])
 
 
 def publish(tag, assets_dir, repo):
@@ -173,18 +197,33 @@ def publish(tag, assets_dir, repo):
     archives = validate_assets(assets_dir, version, commit)
 
     existing = get_release(bin_path, repo, tag)
-    if existing is not None and not existing.get("isDraft"):
+    if existing is not None and not existing["draft"]:
         print("publish-release: %s is already published; nothing to do" % tag)
         return
     if existing is not None:
-        author = (existing.get("author") or {}).get("login")
-        if author != AUTOMATION_AUTHOR:
+        if existing["author"] != AUTOMATION_AUTHOR:
             raise PublishError(
-                "draft release %s is owned by %r; refusing to touch it" % (tag, author)
+                "draft release %s is owned by %r; refusing to touch it"
+                % (tag, existing["author"])
             )
-        # A failed upload may leave a managed partial draft. Recreate the draft
-        # (never the tag) so the next attempt starts from a complete upload.
-        run_gh(bin_path, ["release", "delete", tag, "--repo", repo, "--yes"])
+        if existing["tag"] != tag or existing["id"] is None:
+            raise PublishError("draft release %s has an unexpected identity; refusing to touch it" % tag)
+        # Re-read immediately before deleting: a concurrent publish becomes a
+        # no-op, and a changed identity blocks instead of deleting blindly.
+        current = get_release(bin_path, repo, tag)
+        if current is not None:
+            if not current["draft"]:
+                print("publish-release: %s became published; nothing to do" % tag)
+                return
+            if (
+                current["id"] != existing["id"]
+                or current["tag"] != tag
+                or current["author"] != AUTOMATION_AUTHOR
+            ):
+                raise PublishError("draft release %s changed identity; refusing to delete it" % tag)
+            # A failed upload may leave a managed partial draft. Recreate it by
+            # id (never the tag) so the next attempt starts from a clean upload.
+            delete_release(bin_path, repo, current["id"])
 
     run_gh(
         bin_path,

@@ -42,10 +42,15 @@ jobs:
         run: node --test internal/web/ui.test.cjs
 
       - name: Automation script tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
           bash scripts/test-automerge.sh
           bash scripts/test-package-plugin.sh
+          python3 scripts/test_dependency_policy.py
+          python3 scripts/test_auto_release.py
+          python3 scripts/test_publish_release.py
 
       - name: Makefile smoke test
         run: make help
@@ -59,7 +64,7 @@ jobs:
           # Native runners only; no cross-compilation toolchain is required.
           - goos: linux
             goarch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - goos: linux
             goarch: arm64
             runner: ubuntu-24.04-arm

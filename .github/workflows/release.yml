@@ -42,7 +42,7 @@ jobs:
           # Native runners only; no cross-compilation toolchain is required.
           - goos: linux
             goarch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
           - goos: linux
             goarch: arm64
             runner: ubuntu-24.04-arm

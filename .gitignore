@@ -1,0 +1,10 @@
+/dist/
+/build/
+/.env
+/config.yaml
+/auths/
+*.so
+*.dylib
+*.dll
+*.h
+coverage.out

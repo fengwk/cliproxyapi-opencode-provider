@@ -108,6 +108,7 @@ func managementJSON(status int, payload any) ([]byte, error) {
 // keyFileEntry is one sanitized credential summary returned by the list route.
 type keyFileEntry struct {
 	Name        string `json:"name"`
+	AuthIndex   string `json:"auth_index,omitempty"`
 	Label       string `json:"label"`
 	Status      string `json:"status"`
 	Disabled    bool   `json:"disabled"`
@@ -128,6 +129,7 @@ func (m *Manager) listKeys() ([]byte, error) {
 		}
 		files = append(files, keyFileEntry{
 			Name:        sanitizeString(entry.Name, maxNameLength),
+			AuthIndex:   sanitizeString(entry.AuthIndex, maxNameLength),
 			Label:       sanitizeString(entry.Label, maxLabelLength),
 			Status:      sanitizeString(entry.Status, maxStatusLength),
 			Disabled:    entry.Disabled,

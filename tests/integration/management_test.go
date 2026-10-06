@@ -272,13 +272,18 @@ func assertListSanitized(t *testing.T, body []byte, authDir string) {
 		t.Fatalf("list response not JSON: %v", err)
 	}
 	allowed := map[string]struct{}{
-		"name": {}, "label": {}, "status": {}, "disabled": {},
+		"name": {}, "auth_index": {}, "label": {}, "status": {}, "disabled": {},
 		"unavailable": {}, "success": {}, "failed": {},
 	}
 	for _, entry := range listed.Files {
 		name, _ := entry["name"].(string)
 		if !strings.HasPrefix(name, providerID+"-") || !strings.HasSuffix(name, ".json") {
 			t.Errorf("list entry name %q is not the stable opencode-go file name", name)
+		}
+		// The quota UI needs a bounded, non-secret lookup token, not auth data.
+		index, ok := entry["auth_index"].(string)
+		if !ok || index == "" || len(index) > 200 || strings.ContainsAny(index, " \t\r\n\x00") {
+			t.Errorf("list entry has no safe quota lookup index")
 		}
 		for field := range entry {
 			if _, ok := allowed[field]; !ok {

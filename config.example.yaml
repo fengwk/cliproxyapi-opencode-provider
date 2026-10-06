@@ -30,6 +30,9 @@ routing:
 plugins:
   enabled: true
   dir: "./plugins"
+  # Add this source, then install OpenCode Go from the CPA plugin store.
+  store-sources:
+    - "https://raw.githubusercontent.com/fengwk/cliproxyapi-opencode-provider/main/registry.json"
   configs:
     cliproxyapi-opencode-provider:
       enabled: true
@@ -47,3 +50,10 @@ plugins:
 # Key import UI and endpoint exposed by the plugin:
 #   GET  /v0/resource/plugins/cliproxyapi-opencode-provider/ui
 #   POST /v0/management/plugins/cliproxyapi-opencode-provider/keys
+#
+# Read-only quota is available in the plugin UI without extra configuration.
+# Native CPA management endpoints (all require the management key):
+#   GET  /v0/management/quota/providers
+#   POST /v0/management/plugins/cliproxyapi-opencode-provider/quota
+# Body: {"auth_index":"<index from the plugin keys list>"}
+# The stock management panel needs generic plugin quota support to display it.

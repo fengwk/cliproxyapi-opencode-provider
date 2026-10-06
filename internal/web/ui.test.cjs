@@ -313,3 +313,437 @@ test("network failure retains keys and does not claim the server rejected them",
   assert.match(get("status").textContent, /无法确认导入结果/);
   assert.equal(get("status").textContent.includes("未提交"), false);
 });
+
+/* ---------------------------------------------------------------- quota helpers */
+
+test("deriveEndpoints exposes the native plugin quota endpoint with a proxy prefix", () => {
+  const proxied = ui.deriveEndpoints({
+    pathname: "/gateway/cliproxy/v0/resource/plugins/cliproxyapi-opencode-provider/ui"
+  });
+  assert.equal(
+    proxied.quotaUrl,
+    "/gateway/cliproxy/v0/management/plugins/cliproxyapi-opencode-provider/quota"
+  );
+  const root = ui.deriveEndpoints({ pathname: "/some/stub/ui.html" });
+  assert.equal(root.quotaUrl, "/v0/management/plugins/cliproxyapi-opencode-provider/quota");
+});
+
+test("isSafeAuthIndex and buildQuotaPayload bound the credential index", () => {
+  assert.equal(ui.isSafeAuthIndex("idx-1"), true);
+  assert.equal(ui.isSafeAuthIndex("  idx-1  "), true);
+  assert.equal(ui.isSafeAuthIndex(""), false);
+  assert.equal(ui.isSafeAuthIndex("   "), false);
+  assert.equal(ui.isSafeAuthIndex("a b"), false);
+  assert.equal(ui.isSafeAuthIndex("bad\u0000index"), false);
+  assert.equal(ui.isSafeAuthIndex("x".repeat(ui.MAX_AUTH_INDEX_LENGTH + 1)), false);
+  assert.equal(ui.isSafeAuthIndex(42), false);
+
+  const body = ui.buildQuotaPayload("idx-1");
+  assert.equal(body.ok, true);
+  assert.deepEqual(JSON.parse(body.body), { auth_index: "idx-1" });
+  // No unvalidated index ever reaches the wire.
+  const empty = ui.buildQuotaPayload("a b");
+  assert.equal(empty.ok, false);
+  assert.equal(empty.body, "");
+});
+
+test("isValidIsoTimestamp and formatQuotaReset accept only strict RFC3339", () => {
+  assert.equal(ui.isValidIsoTimestamp("2026-10-07T00:00:00Z"), true);
+  assert.equal(ui.isValidIsoTimestamp("2026-10-07T00:00:00.500+08:00"), true);
+  assert.equal(ui.isValidIsoTimestamp("2026-10-07 00:00:00"), false);
+  assert.equal(ui.isValidIsoTimestamp("not-a-date"), false);
+  assert.equal(ui.isValidIsoTimestamp("2026-13-99T00:00:00Z"), false);
+  assert.equal(ui.isValidIsoTimestamp(1234), false);
+
+  assert.equal(ui.formatQuotaReset("2026-10-07T00:00:00Z"), "2026-10-07 00:00 UTC");
+  assert.equal(ui.formatQuotaReset("2026-10-07T09:05:00Z"), "2026-10-07 09:05 UTC");
+  // An unparseable value never yields a fabricated display.
+  assert.equal(ui.formatQuotaReset("not-a-date"), "");
+});
+
+test("parseQuotaResponse maps the three windows and derives percentages", () => {
+  const parsed = ui.parseQuotaResponse({
+    subscription: { plan: "OpenCode Go" },
+    groups: [
+      {
+        displayName: "OpenCode Go",
+        buckets: [
+          { window: "monthly", remainingFraction: 1, resetTime: "2026-11-01T00:00:00Z" },
+          { window: "rolling", remainingFraction: 0.75, resetTime: "2026-10-07T00:00:00Z" },
+          { window: "weekly", remainingFraction: 0, resetTime: "2026-10-08T00:00:00+00:00" }
+        ]
+      },
+      // Unknown windows are ignored, not guessed at.
+      { displayName: "extra", buckets: [{ window: "bonus", remainingFraction: 0.5, resetTime: "2026-10-09T00:00:00Z" }] }
+    ]
+  });
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.plan, "OpenCode Go");
+  assert.deepEqual(
+    parsed.buckets.map((b) => [b.window, b.label, b.remainingPercent, b.usedPercent]),
+    [
+      ["rolling", "滚动窗口", 75, 25],
+      ["weekly", "每周窗口", 0, 100],
+      ["monthly", "每月窗口", 100, 0]
+    ]
+  );
+  assert.equal(parsed.buckets[0].resetTime, "2026-10-07 00:00 UTC");
+  assert.equal(parsed.buckets[0].remainingFraction, 0.75);
+});
+
+test("parseQuotaResponse rejects malformed data instead of inferring values", () => {
+  const valid = () => ({
+    subscription: { plan: "OpenCode Go" },
+    groups: [
+      {
+        buckets: [
+          { window: "rolling", remainingFraction: 0.5, resetTime: "2026-10-07T00:00:00Z" },
+          { window: "weekly", remainingFraction: 0.5, resetTime: "2026-10-08T00:00:00Z" },
+          { window: "monthly", remainingFraction: 0.5, resetTime: "2026-11-01T00:00:00Z" }
+        ]
+      }
+    ]
+  });
+  const mutate = (fn) => {
+    const payload = valid();
+    fn(payload);
+    return ui.parseQuotaResponse(payload);
+  };
+
+  assert.equal(ui.parseQuotaResponse(null).ok, false);
+  assert.equal(ui.parseQuotaResponse({}).ok, false);
+  // Missing subscription plan is not assumed.
+  assert.equal(mutate((p) => delete p.subscription).ok, false);
+  assert.equal(mutate((p) => delete p.subscription.plan).ok, false);
+  // A missing official window must never be shown as full remaining.
+  assert.equal(mutate((p) => { p.groups[0].buckets.pop(); }).ok, false);
+  // A duplicated window is ambiguous.
+  assert.equal(mutate((p) => { p.groups[0].buckets[2].window = "rolling"; }).ok, false);
+  // Fractions must be finite numbers inside 0..1, not strings or out-of-range.
+  assert.equal(mutate((p) => { p.groups[0].buckets[0].remainingFraction = "0.5"; }).ok, false);
+  assert.equal(mutate((p) => { p.groups[0].buckets[0].remainingFraction = 1.5; }).ok, false);
+  assert.equal(mutate((p) => { p.groups[0].buckets[0].remainingFraction = -0.1; }).ok, false);
+  assert.equal(mutate((p) => { p.groups[0].buckets[0].remainingFraction = NaN; }).ok, false);
+  // Reset times must be valid ISO timestamps.
+  assert.equal(mutate((p) => { p.groups[0].buckets[0].resetTime = "tomorrow"; }).ok, false);
+  assert.equal(mutate((p) => { p.groups[0].buckets[0].resetTime = undefined; }).ok, false);
+});
+
+test("describeQuotaFailure returns fixed messages without server text", () => {
+  assert.match(ui.describeQuotaFailure(400), /400/);
+  assert.match(ui.describeQuotaFailure(404), /版本/);
+  assert.match(ui.describeQuotaFailure(501), /不支持/);
+  assert.match(ui.describeQuotaFailure(502), /服务端错误/);
+  assert.ok(!ui.describeQuotaFailure(418).includes("<"));
+});
+
+test("normalizeFileEntries flags which rows can query quota", () => {
+  const rows = ui.normalizeFileEntries([
+    { name: "opencode-go-1.json", auth_index: "idx-1" },
+    { name: "opencode-go-2.json" },
+    { name: "opencode-go-3.json", auth_index: "bad index" }
+  ]);
+  assert.equal(rows[0].quotaAvailable, true);
+  assert.equal(rows[0].authIndex, "idx-1");
+  assert.equal(rows[1].quotaAvailable, false);
+  assert.equal(rows[2].quotaAvailable, false);
+});
+
+/* ---------------------------------------------------------------- quota DOM flow */
+
+// Minimal DOM stand-in: enough structure for the real ui.js handlers to run
+// without pulling in a browser or any dependency.
+function matchesSelector(element, selector) {
+  const spec = /^([a-zA-Z]+)?(?:\[([^\]=]+)(?:=['"]?([^'"\]]*)['"]?)?\])?$/.exec(selector.trim());
+  if (!spec) {
+    return false;
+  }
+  const tag = spec[1];
+  const attr = spec[2];
+  const value = spec[3];
+  if (tag && element.tagName !== tag.toUpperCase()) {
+    return false;
+  }
+  if (attr) {
+    if (!Object.prototype.hasOwnProperty.call(element.attributes, attr)) {
+      return false;
+    }
+    if (value !== undefined && element.attributes[attr] !== value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function createQuotaDom() {
+  const registry = new Map();
+
+  function makeElement(tag) {
+    const el = {
+      tagName: String(tag).toUpperCase(),
+      children: [],
+      attributes: {},
+      handlers: {},
+      textContent: "",
+      className: "",
+      value: "",
+      disabled: false,
+      hidden: false,
+      max: 0,
+      type: "",
+      focus() {},
+      appendChild(child) {
+        this.children.push(child);
+        child.parentNode = this;
+        return child;
+      },
+      removeChild(child) {
+        const index = this.children.indexOf(child);
+        if (index >= 0) {
+          this.children.splice(index, 1);
+        }
+        child.parentNode = null;
+        return child;
+      },
+      setAttribute(name, value) {
+        this.attributes[name] = String(value);
+      },
+      getAttribute(name) {
+        return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+      },
+      addEventListener(name, handler) {
+        this.handlers[name] = handler;
+      },
+      querySelectorAll(selector) {
+        const found = [];
+        const walk = (node) => {
+          for (const child of node.children) {
+            if (matchesSelector(child, selector)) {
+              found.push(child);
+            }
+            walk(child);
+          }
+        };
+        walk(this);
+        return found;
+      },
+      get firstChild() {
+        return this.children.length ? this.children[0] : null;
+      }
+    };
+    el.classList = {
+      toggle(name, force) {
+        const parts = el.className ? el.className.split(/\s+/).filter(Boolean) : [];
+        const has = parts.indexOf(name) >= 0;
+        const on = force === undefined ? !has : Boolean(force);
+        if (on && !has) {
+          parts.push(name);
+        }
+        if (!on && has) {
+          parts.splice(parts.indexOf(name), 1);
+        }
+        el.className = parts.join(" ");
+        return on;
+      }
+    };
+    return el;
+  }
+
+  return {
+    document: {
+      readyState: "complete",
+      addEventListener() {},
+      createElement: makeElement,
+      getElementById(id) {
+        if (!registry.has(id)) {
+          registry.set(id, makeElement("div"));
+        }
+        return registry.get(id);
+      }
+    }
+  };
+}
+
+const QUOTA_OK_BODY = {
+  subscription: { plan: "OpenCode Go" },
+  groups: [
+    {
+      displayName: "OpenCode Go",
+      buckets: [
+        { window: "rolling", remainingFraction: 0.75, resetTime: "2026-10-07T00:00:00Z" },
+        { window: "weekly", remainingFraction: 0.25, resetTime: "2026-10-08T00:00:00+00:00" },
+        { window: "monthly", remainingFraction: 0, resetTime: "2026-11-01T00:00:00Z" }
+      ]
+    }
+  ]
+};
+
+// Boot the real ui.js against a fake DOM and a scripted fetch. The list route
+// returns `files`; the quota route returns `quotaResponse`.
+async function mountQuotaUi(files, quotaResponse, locationOverride) {
+  const dom = createQuotaDom();
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    const scripted = url.indexOf("/quota") >= 0 ? quotaResponse : { status: 200, body: { files } };
+    if (!scripted) {
+      throw new Error("unexpected fetch");
+    }
+    return {
+      status: scripted.status,
+      ok: scripted.status >= 200 && scripted.status < 300,
+      text: async () => JSON.stringify(scripted.body)
+    };
+  };
+  vm.runInNewContext(readAsset("ui.js"), {
+    document: dom.document,
+    window: {
+      location: locationOverride || {
+        protocol: "http:", hostname: "127.0.0.1",
+        pathname: "/v0/resource/plugins/cliproxyapi-opencode-provider/ui"
+      },
+      confirm: () => true
+    },
+    TextEncoder,
+    fetch: fetchImpl
+  });
+  const get = (id) => dom.document.getElementById(id);
+  const settle = async () => {
+    // Wait out any in-flight request (disabled controls mean "busy").
+    for (let i = 0; i < 30 && get("reload-btn").disabled; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  get("mgmt-key").value = "fake-management-key";
+  get("auth-form").handlers.submit({ preventDefault() {} });
+  await settle();
+  return { get, requests, settle };
+}
+
+test("quota button posts the selected auth index to the native read-only endpoint", async () => {
+  const { get, requests, settle } = await mountQuotaUi(
+    [
+      { name: "opencode-go-1.json", auth_index: "idx-1" },
+      { name: "opencode-go-2.json", auth_index: "idx-2" }
+    ],
+    { status: 200, body: QUOTA_OK_BODY }
+  );
+
+  const buttons = get("files-body").querySelectorAll("button[data-action='quota']");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].disabled, false);
+
+  buttons[0].handlers.click({ currentTarget: buttons[0] });
+  await settle();
+
+  // Exactly the list GET plus one quota POST: no polling or automatic retry.
+  assert.equal(requests.length, 2);
+  const quotaRequest = requests[1];
+  assert.equal(quotaRequest.url, "/v0/management/plugins/cliproxyapi-opencode-provider/quota");
+  assert.equal(quotaRequest.init.method, "POST");
+  assert.deepEqual(JSON.parse(quotaRequest.init.body), { auth_index: "idx-1" });
+  assert.equal(quotaRequest.init.headers.Authorization, "Bearer fake-management-key");
+  assert.equal(quotaRequest.init.credentials, "omit");
+
+  // Three windows rendered with derived percentages and formatted reset times.
+  assert.equal(get("quota-panel").hidden, false);
+  const rows = get("quota-body").children;
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].children[0].textContent, "滚动窗口");
+  assert.equal(rows[0].children[1].textContent, "75%");
+  assert.equal(rows[0].children[2].textContent, "25%");
+  assert.equal(rows[0].children[4].textContent, "2026-10-07 00:00 UTC");
+  assert.equal(rows[2].children[1].textContent, "0%");
+  assert.equal(rows[2].children[2].textContent, "100%");
+  const progress = rows[0].children[3].children[0];
+  assert.equal(progress.tagName, "PROGRESS");
+  assert.equal(progress.max, 1);
+  assert.equal(progress.value, 0.75);
+  assert.match(get("quota-selection").textContent, /opencode-go-1\.json/);
+  assert.match(get("quota-selection").textContent, /OpenCode Go/);
+  assert.match(get("quota-status").textContent, /已加载/);
+
+  // A later list refresh clears the stale selection panel.
+  get("reload-btn").handlers.click({});
+  await settle();
+  assert.equal(get("quota-panel").hidden, true);
+  assert.match(get("quota-status").textContent, /尚未选择/);
+  assert.equal(requests.length, 3);
+});
+
+test("malformed quota response shows a fixed error and never a guessed value", async () => {
+  const broken = JSON.parse(JSON.stringify(QUOTA_OK_BODY));
+  broken.groups[0].buckets[0].remainingFraction = "<img src=x onerror=alert(1)>";
+  const { get, requests, settle } = await mountQuotaUi(
+    [{ name: "opencode-go-1.json", auth_index: "idx-1" }],
+    { status: 200, body: broken }
+  );
+  const button = get("files-body").querySelectorAll("button[data-action='quota']")[0];
+  button.handlers.click({ currentTarget: button });
+  await settle();
+
+  assert.equal(get("quota-panel").hidden, true);
+  assert.match(get("quota-status").textContent, /配额数据不可用/);
+  assert.equal(get("quota-status").textContent.includes("img"), false);
+  assert.equal(get("quota-status").textContent.includes("alert"), false);
+  assert.equal(requests.length, 2);
+});
+
+test("quota auth failure disconnects and clears the key and old quota", async () => {
+  for (const status of [401, 403]) {
+    const { get, requests, settle } = await mountQuotaUi(
+      [{ name: "opencode-go-1.json", auth_index: "idx-1" }],
+      { status, body: { error: "leaked-secret" } }
+    );
+    const button = get("files-body").querySelectorAll("button[data-action='quota']")[0];
+    button.handlers.click({ currentTarget: button });
+    await settle();
+
+    assert.equal(get("mgmt-key").value, "");
+    assert.equal(get("quota-panel").hidden, true);
+    assert.equal(get("quota-status").textContent.includes(String(status)), true);
+    assert.equal(get("quota-status").textContent.includes("leaked-secret"), false);
+    assert.equal(requests.length, 2);
+  }
+});
+
+test("a non-auth quota error uses a fixed message and does not echo the body", async () => {
+  const { get, settle } = await mountQuotaUi(
+    [{ name: "opencode-go-1.json", auth_index: "idx-1" }],
+    { status: 502, body: { error: "<b>upstream secret</b>" } }
+  );
+  const button = get("files-body").querySelectorAll("button[data-action='quota']")[0];
+  button.handlers.click({ currentTarget: button });
+  await settle();
+
+  assert.equal(get("quota-panel").hidden, true);
+  assert.match(get("quota-status").textContent, /服务端错误/);
+  assert.equal(get("quota-status").textContent.includes("upstream"), false);
+});
+
+test("a row without a safe auth index cannot query quota", async () => {
+  const { get, requests } = await mountQuotaUi(
+    [
+      { name: "opencode-go-1.json" },
+      { name: "opencode-go-2.json", auth_index: "bad index" }
+    ],
+    { status: 200, body: QUOTA_OK_BODY }
+  );
+  const buttons = get("files-body").querySelectorAll("button[data-action='quota']");
+  assert.equal(buttons.length, 2);
+  assert.equal(buttons[0].disabled, true);
+  assert.equal(buttons[1].disabled, true);
+  assert.equal(requests.length, 1, "no quota request without a safe index");
+});
+
+test("plaintext HTTP off loopback keeps quota disabled and sends nothing", async () => {
+  const { get, requests } = await mountQuotaUi(
+    [{ name: "opencode-go-1.json", auth_index: "idx-1" }],
+    { status: 200, body: QUOTA_OK_BODY },
+    { protocol: "http:", hostname: "cpa.example.com", pathname: "/v0/resource/plugins/cliproxyapi-opencode-provider/ui" }
+  );
+  // The gate blocks the initial list refresh, so no rows and no requests exist.
+  assert.equal(requests.length, 0);
+  assert.equal(get("reload-btn").disabled, true);
+  assert.equal(get("insecure-warning").hidden, false);
+});

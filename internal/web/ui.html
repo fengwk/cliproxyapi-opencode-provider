@@ -82,6 +82,30 @@
     <p class="hint">删除仅移除所选的 opencode-go 凭据文件；保存或删除后不会自动轮询，请手动刷新列表以查看最新状态。</p>
   </section>
 
+  <section class="card" aria-labelledby="quota-heading">
+    <h2 id="quota-heading">4. 配额查看</h2>
+    <p class="hint">配额查询为只读操作，不会重置或消耗任何配额。同一订阅下的多个密钥可能共享配额，因此不同密钥查询到的结果可能相同。</p>
+    <p id="quota-status" class="status info" role="status" aria-live="polite">尚未选择密钥。请在“已托管的密钥”列表中点击某个密钥的“查看配额”。</p>
+    <div id="quota-panel" hidden>
+      <p id="quota-selection" class="hint"></p>
+      <div class="table-wrap">
+        <table class="quota-table">
+          <caption class="visually-hidden">所选密钥的配额窗口</caption>
+          <thead>
+            <tr>
+              <th scope="col">窗口</th>
+              <th scope="col">剩余</th>
+              <th scope="col">已用</th>
+              <th scope="col">进度</th>
+              <th scope="col">重置时间</th>
+            </tr>
+          </thead>
+          <tbody id="quota-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
   <section class="card" aria-labelledby="about-heading">
     <h2 id="about-heading">运行说明</h2>
     <ul class="notes">

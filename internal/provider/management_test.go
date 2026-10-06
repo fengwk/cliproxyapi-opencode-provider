@@ -74,7 +74,7 @@ func TestManagementRegistration(t *testing.T) {
 func TestListKeysFiltersAndSanitizes(t *testing.T) {
 	host := newFakeHost()
 	host.authFiles = []pluginapi.HostAuthFileEntry{
-		{ID: "a", Name: "opencode-go-aaa.json", Provider: ProviderID, Type: ProviderID, Label: "team", Status: "active", Success: 3, Failed: 1},
+		{ID: "a", AuthIndex: "idx-a", Name: "opencode-go-aaa.json", Provider: ProviderID, Type: ProviderID, Label: "team", Status: "active", Success: 3, Failed: 1},
 		{ID: "b", Name: "other.json", Provider: "other", Type: "other", Label: "secret"},
 	}
 	manager := newTestManager(host)
@@ -93,6 +93,9 @@ func TestListKeysFiltersAndSanitizes(t *testing.T) {
 	}
 	if decoded.Files[0].Success != 3 || decoded.Files[0].Failed != 1 {
 		t.Fatalf("counts not surfaced: %+v", decoded.Files[0])
+	}
+	if decoded.Files[0].AuthIndex != "idx-a" {
+		t.Fatalf("quota lookup index = %q, want idx-a", decoded.Files[0].AuthIndex)
 	}
 	if strings.Contains(string(resp.Body), "other.json") || strings.Contains(string(resp.Body), `"path"`) || strings.Contains(string(resp.Body), "api_key") {
 		t.Fatalf("list response leaked data: %s", resp.Body)

@@ -193,6 +193,22 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 		return okEnvelope(managementRegistration())
 	case pluginabi.MethodManagementHandle:
 		return m.handleManagement(request)
+	case pluginabi.MethodQuotaIdentifier:
+		return okEnvelope(map[string]string{"identifier": ProviderID})
+	case pluginabi.MethodQuotaDescribe:
+		return okEnvelope(quotaDescription())
+	case pluginabi.MethodQuotaFetch:
+		var req rpcQuotaRequest
+		if err := json.Unmarshal(request, &req); err != nil {
+			return mustEnvelope(errorResult("invalid_request", "malformed quota fetch request", 0))
+		}
+		result, errQuota := m.fetchQuota(req)
+		if errQuota != nil {
+			return mustEnvelope(resultError(errQuota))
+		}
+		return okEnvelope(result)
+	case pluginabi.MethodQuotaReset:
+		return mustEnvelope(errorResult("unsupported", "opencode-go quota reset is unsupported", http.StatusNotImplemented))
 	default:
 		return mustEnvelope(errorResult("unknown_method", "unknown method: "+method, 0))
 	}

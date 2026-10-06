@@ -59,6 +59,7 @@ type registrationCapability struct {
 	ExecutorOutputFormats []string `json:"executor_output_formats"`
 	RequestInterceptor    bool     `json:"request_interceptor"`
 	ManagementAPI         bool     `json:"management_api"`
+	QuotaProvider         bool     `json:"quota_provider"`
 }
 
 // registrationResponse negotiates the schema conservatively: never claim a
@@ -83,6 +84,7 @@ func registrationResponse(hostSchema uint32) registration {
 			ExecutorOutputFormats: []string{"openai", "claude", "openai-response"},
 			RequestInterceptor:    true,
 			ManagementAPI:         true,
+			QuotaProvider:         true,
 		},
 	}
 }

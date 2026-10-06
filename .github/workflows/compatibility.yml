@@ -1,0 +1,19 @@
+name: compatibility
+
+# Daily real-host compatibility check against the newest stable CLIProxyAPI v8
+# release. The plugin source, including its pinned SDK, is unchanged; only the
+# host binary is built fresh. A red run is the report - failures are never
+# swallowed with a success exit code.
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-host-latest:
+    uses: ./.github/workflows/real-host.yml
+    with:
+      cpa-tag: latest

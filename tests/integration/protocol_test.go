@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -251,6 +250,3 @@ func mockModelOf(call mockCall) string {
 	}
 	return stringValue(body["model"])
 }
-
-// ensure strconv stays referenced for deterministic subtest naming via sprintf.
-var _ = strconv.Itoa

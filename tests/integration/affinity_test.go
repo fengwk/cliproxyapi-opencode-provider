@@ -4,7 +4,6 @@ package integration
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 )
@@ -241,5 +240,3 @@ func TestFailoverStreamOpening(t *testing.T) {
 		t.Errorf("stream failover retried the same credential %q", upstreamKeyOf(calls[1]))
 	}
 }
-
-var _ = fmt.Sprintf

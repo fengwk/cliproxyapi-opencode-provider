@@ -143,7 +143,6 @@ func (m *mockOpenCode) handleNative(w http.ResponseWriter, call mockCall, kind s
 	m.validateNative(call, body, kind, session)
 
 	mode := detectMockMode(call.Body)
-	key := nativeKey(kind, call.Header)
 
 	if mode == "fail_once" {
 		failID := "fail_once|" + failOnceKey(call.Body)
@@ -153,7 +152,6 @@ func (m *mockOpenCode) handleNative(w http.ResponseWriter, call mockCall, kind s
 			m.failedOnce[failID] = true
 		}
 		m.mu.Unlock()
-		_ = key
 		if !already {
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"error": map[string]any{"message": "forced failover", "type": "rate_limit_error", "code": "rate_limit_exceeded"},
@@ -163,7 +161,10 @@ func (m *mockOpenCode) handleNative(w http.ResponseWriter, call mockCall, kind s
 	}
 
 	if mode == "truncate" && stream {
-		writeTruncatedSSE(w, chatSSEFixture(mockNativeModel(body)))
+		fixture := chatSSEFixture(mockNativeModel(body))
+		finish := strings.Index(fixture, `"finish_reason":"tool_calls"`)
+		boundary := strings.LastIndex(fixture[:finish], "data: ")
+		writeTruncatedSSE(w, fixture[:boundary])
 		return
 	}
 
@@ -316,13 +317,6 @@ func failOnceKey(body []byte) string {
 	}
 	delete(decoded, "prompt_cache_key")
 	return mustMarshalString(decoded)
-}
-
-func nativeKey(kind string, header http.Header) string {
-	if kind == "claude" {
-		return header.Get("x-api-key")
-	}
-	return bearerKey(header.Get("Authorization"))
 }
 
 func bearerKey(value string) string {

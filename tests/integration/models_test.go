@@ -274,8 +274,7 @@ func TestCatalogRediscoveryAndEmptyRemoval(t *testing.T) {
 	assertCatalogExactly(t, h.catalogIDs(t),
 		publicModel(nativeGLM), publicModel(nativeMinimax), publicModel(nativeGPT))
 
-	// The upstream now serves a different, single known model; the catalog must
-	// follow it exactly after the trigger, with no stale or snapshot extras.
+	// An unknown family must still be published, without stale or snapshot extras.
 	onlyOne := "opencode-go-only-one"
 	mock.setModelsResponse(http.StatusOK, upstreamModelsBody(onlyOne))
 	baseline := len(mock.callsForPath("/v1/models"))
@@ -337,15 +336,51 @@ func TestCatalogDiscoveryFailurePublishesNothing(t *testing.T) {
 	}
 }
 
+// TestCatalogFailedRefreshRetainsHostCatalog verifies a discovery error does
+// not clear the last registered catalog in the supported CPA hosts.
+func TestCatalogFailedRefreshRetainsHostCatalog(t *testing.T) {
+	h := newHarness(t)
+	mock := h.mock
+	if status, body := h.importKeys(t, []string{keyAlpha}, "refresh-error"); status != http.StatusOK {
+		t.Fatalf("import keys: status %d body %s", status, truncate(body, 400))
+	}
+	want := []string{publicModel(nativeGLM), publicModel(nativeMinimax), publicModel(nativeGPT)}
+	assertCatalogExactly(t, h.catalogIDs(t), want...)
+
+	mock.setModelsResponse(http.StatusServiceUnavailable, []byte(`{"error":{"message":"down"}}`))
+	baseline := len(mock.callsForPath("/v1/models"))
+	bumpCredentialLabel(t, h, keyAlpha, "refresh-error-1")
+	waitForProbeIncrease(t, mock, baseline, 10*time.Second)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		assertCatalogExactly(t, h.catalogIDs(t), want...)
+		time.Sleep(50 * time.Millisecond)
+	}
+	if status, raw := sendChatWithModel(t, h, publicModel(nativeGLM), "refresh-S1", "full"); status != http.StatusOK {
+		t.Fatalf("inference after failed discovery: status %d body %s", status, truncate(raw, 400))
+	}
+	call, ok := lastUpstreamCall(h, "/v1/chat/completions")
+	if !ok {
+		t.Fatal("inference after failed discovery did not reach upstream")
+	}
+	assertUpstreamModel(t, call, nativeGLM)
+
+	mock.setModelsResponse(http.StatusOK, upstreamModelsBody(nativeGLM))
+	baseline = len(mock.callsForPath("/v1/models"))
+	bumpCredentialLabel(t, h, keyAlpha, "refresh-error-2")
+	waitForCatalogExactly(t, h, mock, baseline, publicModel(nativeGLM))
+	mock.requireClean(t)
+}
+
 // TestModelAliasRoutesToNativeUpstream proves a CPA model alias exposes a client
 // name that routes to the real native model: the recorded upstream request body
-// carries the native id only, and a host rediscovery of the same catalog does
+// carries the native id only, and a host rediscovery of a reduced catalog does
 // not break the alias.
 func TestModelAliasRoutesToNativeUpstream(t *testing.T) {
 	h := newHarness(t)
 	mock := h.mock
 
-	if status, body := h.importKeys(t, []string{keyAlpha, keyBeta}, "alias"); status != http.StatusOK {
+	if status, body := h.importKeys(t, []string{keyAlpha}, "alias"); status != http.StatusOK {
 		t.Fatalf("import keys: status %d body %s", status, truncate(body, 400))
 	}
 
@@ -374,13 +409,11 @@ func TestModelAliasRoutesToNativeUpstream(t *testing.T) {
 	}
 	assertUpstreamModel(t, call, nativeGLM)
 
-	// A host rediscovery of the same catalog must not break the alias.
+	// An exact smaller catalog proves registration completed for the only auth.
+	mock.setModelsResponse(http.StatusOK, upstreamModelsBody(nativeGLM))
 	baseline := len(mock.callsForPath("/v1/models"))
 	bumpCredentialLabel(t, h, keyAlpha, "alias-refresh")
-	waitForProbeIncrease(t, mock, baseline, 10*time.Second)
-	// Wait for the rediscovered credential to settle back into the catalog so a
-	// mid-re-registration request cannot be mistaken for an alias failure.
-	h.waitForCatalog(t, 10*time.Second, nativeGLM, nativeMinimax, nativeGPT)
+	waitForCatalogExactly(t, h, mock, baseline, publicModel(nativeGLM), aliasID)
 
 	mock.reset()
 	if status, raw := sendChatWithModel(t, h, aliasID, "alias-S2", "full"); status != http.StatusOK {

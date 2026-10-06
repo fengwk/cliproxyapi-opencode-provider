@@ -49,7 +49,7 @@ func TestReleaseRetryPreservesTagAndRepository(t *testing.T) {
 				strings.Contains(s.Run, "git rev-parse HEAD")
 		}
 		if s.Name == "Package archive" {
-			commitPackaged = s.Env["GITHUB_SHA"] == "${{ steps.version.outputs.commit }}"
+			commitPackaged = s.Env["COMMIT"] == "${{ steps.version.outputs.commit }}"
 		}
 	}
 	for _, s := range workflow.Jobs["publish"].Steps {

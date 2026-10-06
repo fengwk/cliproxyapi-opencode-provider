@@ -46,6 +46,20 @@ plugins:
 仅添加 `plugins.configs` 配置不会下载安装文件，只有配置没有动态库时会显示“未注册”。
 CPA 运行环境需要能访问 GitHub Raw、GitHub API 与 Release 下载地址。
 
+共享出口的匿名 GitHub API 额度用尽时，安装可能返回 429；这不是插件加载错误。
+可为 CPA 进程设置环境变量 `CPA_PLUGIN_GITHUB_TOKEN`，再将下面的可选认证规则合入
+`plugins` 对象。使用仅需读取公开 Release 元数据的 GitHub token，不要使用 OpenCode
+密钥，也不要把 token 明文写入 YAML：
+
+```yaml
+plugins:
+  store-auth:
+    - match: "https://api.github.com/repos/fengwk/cliproxyapi-opencode-provider"
+      apply-to: ["metadata"]
+      type: "github-token"
+      token-env: "CPA_PLUGIN_GITHUB_TOKEN"
+```
+
 #### 手动构建或安装
 
 本地构建需要 Go 1.26+、C 编译器和 Make：

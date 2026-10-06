@@ -168,12 +168,12 @@ test("isSafeFileName and toCellText guard delete input", () => {
 });
 
 test("formatImportResult reports success and partial imports without server strings", () => {
-  const ok = ui.formatImportResult(200, { imported: 2, skipped: 1, failed: 0 });
+  const ok = ui.formatImportResult(200, { imported: 2, skipped: 1, failed: 0 }, 3);
   assert.equal(ok.ok, true);
   assert.equal(ok.level, "ok");
   assert.match(ok.summary, /成功 2/);
 
-  const partial = ui.formatImportResult(207, { imported: 1, skipped: 0, failed: 1 });
+  const partial = ui.formatImportResult(207, { imported: 1, skipped: 0, failed: 1 }, 2);
   assert.equal(partial.ok, true);
   assert.equal(partial.level, "warn");
   assert.match(partial.summary, /部分导入完成/);
@@ -184,6 +184,37 @@ test("formatImportResult reports success and partial imports without server stri
   assert.equal(failed.level, "error");
   assert.ok(!failed.summary.includes("img"));
   assert.ok(!failed.summary.includes("alert"));
+});
+
+test("formatImportResult accepts only trusted counts summing to the submitted total", () => {
+  const check = (body, expected) => ui.formatImportResult(200, body, expected);
+
+  // Missing or non-integer counts are never treated as a confirmed success.
+  assert.equal(check({}, 0).ok, false);
+  assert.equal(check(null, 0).ok, false);
+  assert.equal(check({ imported: 1, skipped: 0 }, 1).ok, false); // missing failed
+  assert.equal(check({ imported: "1", skipped: 0, failed: 0 }, 1).ok, false); // string
+  assert.equal(check({ imported: -1, skipped: 2, failed: 0 }, 1).ok, false); // negative
+  assert.equal(check({ imported: 1.5, skipped: 0, failed: 0 }, 1).ok, false); // fraction
+  assert.equal(check({ imported: NaN, skipped: 0, failed: 0 }, 1).ok, false);
+  assert.equal(
+    check({ imported: Number.MAX_SAFE_INTEGER + 1, skipped: 0, failed: 0 }, 1).ok,
+    false // unsafe integer
+  );
+  // The three counts must account for exactly the submitted deduped keys.
+  assert.equal(check({ imported: 1, skipped: 0, failed: 0 }, 3).ok, false);
+  assert.equal(check({ imported: 1, skipped: 0, failed: 0 }, undefined).ok, false);
+  assert.equal(check({ imported: 1, skipped: 0, failed: 0 }, "1").ok, false);
+  // Every unconfirmed body uses the same fixed local, non-reflective message.
+  assert.match(check({}, 0).summary, /无法确认导入结果/);
+
+  // A contract-compliant success is accepted and exposes failed so the caller
+  // can decide whether the input may be cleared.
+  const confirmed = check({ imported: 2, skipped: 1, failed: 0 }, 3);
+  assert.equal(confirmed.ok, true);
+  assert.equal(confirmed.level, "ok");
+  assert.equal(confirmed.failed, 0);
+  assert.match(confirmed.summary, /成功 2/);
 });
 
 test("describeHttpFailure returns fixed safe messages", () => {
@@ -305,6 +336,60 @@ async function submitImport(response, networkFailure = false) {
   return getElement;
 }
 
+// Same fake DOM as submitImport, but the fetch promise stays pending until the
+// test resolves it, so the locked inputs can be observed mid-request.
+async function startImportDeferred() {
+  const elements = new Map();
+  const getElement = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, {
+        value: "", disabled: false, hidden: false, textContent: "",
+        handlers: {},
+        addEventListener(name, handler) { this.handlers[name] = handler; },
+        querySelectorAll() { return []; }
+      });
+    }
+    return elements.get(id);
+  };
+  const requests = [];
+  let resolveFetch;
+  const pending = new Promise((resolve) => { resolveFetch = resolve; });
+  vm.runInNewContext(readAsset("ui.js"), {
+    document: { readyState: "complete", getElementById: getElement },
+    window: {
+      location: {
+        protocol: "http:", hostname: "127.0.0.1",
+        pathname: "/v0/resource/plugins/cliproxyapi-opencode-provider/ui"
+      }
+    },
+    TextEncoder,
+    fetch: (url, init) => {
+      requests.push({ url, init });
+      return pending;
+    }
+  });
+  getElement("mgmt-key").value = "fake-management-key";
+  getElement("keys").value = "fake-upstream-key";
+  getElement("label").value = "batch-1";
+  getElement("import-form").handlers.submit({ preventDefault() {} });
+  // Let the handler reach fetch before the test inspects the in-flight state.
+  await new Promise((resolve) => setImmediate(resolve));
+  return {
+    get: getElement,
+    requests,
+    respond: (status, body) => resolveFetch({
+      status,
+      ok: status >= 200 && status < 300,
+      text: async () => body
+    }),
+    settle: async () => {
+      for (let i = 0; i < 10 && getElement("import-btn").disabled; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+  };
+}
+
 test("successful form import clears the submitted keys", async () => {
   const get = await submitImport({ status: 200, body: { imported: 1, skipped: 0, failed: 0 } });
   assert.equal(get("keys").value, "");
@@ -322,6 +407,65 @@ test("network failure retains keys and does not claim the server rejected them",
   assert.equal(get("keys").value, "fake-upstream-key");
   assert.match(get("status").textContent, /无法确认导入结果/);
   assert.equal(get("status").textContent.includes("未提交"), false);
+});
+
+test("import locks the key and label inputs while the request is pending", async () => {
+  const flow = await startImportDeferred();
+  // In flight: both secret-bearing inputs must be locked so a late response can
+  // never clear text the user typed after submitting.
+  assert.equal(flow.get("keys").disabled, true);
+  assert.equal(flow.get("label").disabled, true);
+  assert.equal(flow.get("import-btn").disabled, true);
+  assert.equal(flow.requests.length, 1);
+  // The wire body matches the parsed, deduped, labelled input.
+  assert.deepEqual(JSON.parse(flow.requests[0].init.body), {
+    keys: ["fake-upstream-key"], label: "batch-1"
+  });
+
+  flow.respond(200, JSON.stringify({ imported: 1, skipped: 0, failed: 0 }));
+  await flow.settle();
+  // Controls are restored and a confirmed success clears only the key textarea.
+  assert.equal(flow.get("keys").disabled, false);
+  assert.equal(flow.get("label").disabled, false);
+  assert.equal(flow.get("keys").value, "");
+  assert.equal(flow.get("label").value, "batch-1");
+  assert.match(flow.get("status").textContent, /导入成功/);
+});
+
+test("unconfirmed 2xx import bodies retain the keys and report an unknown result", async () => {
+  const bodies = [
+    "<html><body>ok</body></html>", // HTML page instead of JSON
+    "",                             // empty body -> readJson fallback {}
+    "{}",                           // missing imported/skipped/failed
+    JSON.stringify({ imported: 2, skipped: 0, failed: 0 }) // count mismatch
+  ];
+  for (const body of bodies) {
+    const flow = await startImportDeferred();
+    flow.respond(200, body);
+    await flow.settle();
+    assert.equal(flow.get("keys").value, "fake-upstream-key", "keys retained for " + JSON.stringify(body));
+    assert.match(flow.get("status").textContent, /无法确认导入结果/, "unknown reported for " + JSON.stringify(body));
+    assert.equal(flow.requests.length, 1, "no automatic retry");
+    assert.equal(flow.get("keys").disabled, false, "controls restored");
+  }
+});
+
+test("a valid skipped-only 200 report clears the submitted keys", async () => {
+  const flow = await startImportDeferred();
+  // Every submitted key was skipped but the counts still confirm the response.
+  flow.respond(200, JSON.stringify({ imported: 0, skipped: 1, failed: 0 }));
+  await flow.settle();
+  assert.equal(flow.get("keys").value, "");
+  assert.match(flow.get("status").textContent, /导入成功/);
+  assert.equal(flow.get("keys").disabled, false);
+});
+
+test("a 200 report carrying failures retains the keys", async () => {
+  const flow = await startImportDeferred();
+  flow.respond(200, JSON.stringify({ imported: 0, skipped: 0, failed: 1 }));
+  await flow.settle();
+  assert.equal(flow.get("keys").value, "fake-upstream-key");
+  assert.match(flow.get("status").textContent, /部分导入完成/);
 });
 
 /* ---------------------------------------------------------------- quota helpers */
@@ -756,4 +900,18 @@ test("plaintext HTTP off loopback keeps quota disabled and sends nothing", async
   assert.equal(requests.length, 0);
   assert.equal(get("reload-btn").disabled, true);
   assert.equal(get("insecure-warning").hidden, false);
+});
+
+test("off-loopback plaintext keeps the key and label inputs disabled", async () => {
+  // Busy-state locking must never re-enable the secret inputs under the
+  // insecure transport gate.
+  const { get } = await mountQuotaUi(
+    [],
+    { status: 200, body: { files: [] } },
+    { protocol: "http:", hostname: "cpa.example.com", pathname: "/v0/resource/plugins/cliproxyapi-opencode-provider/ui" }
+  );
+  assert.equal(get("keys").disabled, true);
+  assert.equal(get("label").disabled, true);
+  assert.equal(get("mgmt-key").disabled, true);
+  assert.equal(get("import-btn").disabled, true);
 });

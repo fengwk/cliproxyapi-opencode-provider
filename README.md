@@ -116,6 +116,9 @@ http://127.0.0.1:8317/v0/resource/plugins/cliproxyapi-opencode-provider/ui
 非敏感状态列表和删除。管理密钥、下游访问 CPA 的 API key、OpenCode 上游 API key
 是三种不同凭据，不要混用。密钥文件权限由 CPA 设置为 `0600`；请备份并保护 auth 目录。
 
+凭据列表读取失败时不会执行导入；插件内的并发导入串行去重，不覆盖已有文件。
+请求期间输入框暂时禁用；只有经过结果校验的完整成功才清空密钥，失败或结果未知时保留输入。
+
 ### 4. 发起请求
 
 模型 ID 使用固定命名空间 `opencode-go/`，例如 `opencode-go/glm-5.2`、

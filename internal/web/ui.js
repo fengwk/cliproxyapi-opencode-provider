@@ -418,25 +418,59 @@ function countNotice(counts) {
   return parts.length ? "（" + parts.join("，") + "）" : "";
 }
 
-function formatImportResult(status, payload) {
-  var data = isPlainObject(payload) ? payload : {};
-  var imported = toCount(data.imported);
-  var skipped = toCount(data.skipped);
-  var failed = toCount(data.failed);
-  var ok = status >= 200 && status < 300;
+// Import counts must be actual non-negative safe integers.
+function isNonNegativeSafeInteger(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+// Confirm that the import report accounts for every submitted key.
+function formatImportResult(status, payload, expectedCount) {
+  if (!(status >= 200 && status < 300)) {
+    return {
+      ok: false,
+      level: "error",
+      summary: describeHttpFailure(status),
+      imported: 0,
+      skipped: 0,
+      failed: 0
+    };
+  }
+  var data = isPlainObject(payload) ? payload : null;
+  var countsValid =
+    data !== null &&
+    isNonNegativeSafeInteger(expectedCount) &&
+    isNonNegativeSafeInteger(data.imported) &&
+    isNonNegativeSafeInteger(data.skipped) &&
+    isNonNegativeSafeInteger(data.failed) &&
+    data.imported + data.skipped + data.failed === expectedCount;
+  if (!countsValid) {
+    // Never guess: an unrecognized body is not a confirmed success.
+    return {
+      ok: false,
+      level: "error",
+      summary: "无法确认导入结果，请刷新列表核对后再决定是否重试。",
+      imported: 0,
+      skipped: 0,
+      failed: 0
+    };
+  }
   var summary;
   var level;
-  if (!ok) {
-    summary = describeHttpFailure(status);
-    level = "error";
-  } else if (status === 207 || failed > 0) {
-    summary = "部分导入完成：成功 " + imported + "，跳过 " + skipped + "，失败 " + failed + "。";
-    level = imported > 0 ? "warn" : "error";
+  if (status === 207 || data.failed > 0) {
+    summary = "部分导入完成：成功 " + data.imported + "，跳过 " + data.skipped + "，失败 " + data.failed + "。";
+    level = data.imported > 0 ? "warn" : "error";
   } else {
-    summary = "导入成功：成功 " + imported + "，跳过 " + skipped + "，失败 " + failed + "。";
+    summary = "导入成功：成功 " + data.imported + "，跳过 " + data.skipped + "，失败 " + data.failed + "。";
     level = "ok";
   }
-  return { ok: ok, level: level, summary: summary, imported: imported, skipped: skipped, failed: failed };
+  return {
+    ok: true,
+    level: level,
+    summary: summary,
+    imported: data.imported,
+    skipped: data.skipped,
+    failed: data.failed
+  };
 }
 
 // Compose the management request. The key is only ever placed in the Authorization header.
@@ -554,6 +588,10 @@ function initUi() {
     el.refreshBtn.disabled = disabled;
     el.importBtn.disabled = disabled;
     el.reloadBtn.disabled = disabled;
+    // Lock the key inputs while busy so an in-flight response can never clear
+    // text the user typed after submitting.
+    el.keys.disabled = disabled;
+    el.label.disabled = disabled;
     el.importProgress.hidden = !flag;
     var actionButtons = el.filesBody.querySelectorAll("button[data-action]");
     for (var i = 0; i < actionButtons.length; i++) {
@@ -773,6 +811,7 @@ function initUi() {
     }
 
     var payload = buildImportPayload(parsed.keys, labelCheck.value);
+    var expectedCount = parsed.counts.valid;
     // The submitted keys are no longer needed once the body is built.
     parsed.keys.length = 0;
     if (!payload.ok) {
@@ -798,12 +837,13 @@ function initUi() {
           return null;
         }
         return readJson(response).then(function (resultPayload) {
-          var result = formatImportResult(response.status, resultPayload);
-          // Keep the input on partial failure so failed keys can be resubmitted.
-          if (result.failed === 0) {
+          var result = formatImportResult(response.status, resultPayload, expectedCount);
+          // Clear the input only after a fully confirmed, error-free import.
+          if (result.ok && result.failed === 0) {
             el.keys.value = "";
           }
-          setStatus(result.summary + notice + " 请点击“刷新列表”查看最新状态。", result.level);
+          var hint = result.ok ? " 请点击“刷新列表”查看最新状态。" : "";
+          setStatus(result.summary + notice + hint, result.level);
         });
       })
       .catch(function () {

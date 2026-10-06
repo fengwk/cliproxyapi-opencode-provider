@@ -161,15 +161,25 @@ func (m *Manager) importKeys(body []byte) ([]byte, error) {
 	}
 	label := sanitizeString(req.Label, maxLabelLength)
 
+	// Serialize the check-and-save so two concurrent imports of the same key
+	// cannot both observe it as missing and save it twice.
+	m.importMu.Lock()
+	defer m.importMu.Unlock()
+
+	entries, errList := m.bridge.AuthList()
+	if errList != nil {
+		// A failed listing must not fall back to saving blind, which would
+		// overwrite existing credentials. Report a sanitized error and let zero
+		// writes happen.
+		return managementJSON(http.StatusBadGateway, map[string]string{"error": "unable to list credentials"})
+	}
 	existing := map[string]struct{}{}
-	if entries, errList := m.bridge.AuthList(); errList == nil {
-		for _, entry := range entries {
-			if name := strings.TrimSpace(entry.Name); name != "" {
-				existing[name] = struct{}{}
-			}
-			if id := strings.TrimSpace(entry.ID); id != "" {
-				existing[id] = struct{}{}
-			}
+	for _, entry := range entries {
+		if name := strings.TrimSpace(entry.Name); name != "" {
+			existing[name] = struct{}{}
+		}
+		if id := strings.TrimSpace(entry.ID); id != "" {
+			existing[id] = struct{}{}
 		}
 	}
 	imported, skipped, failed := 0, 0, 0

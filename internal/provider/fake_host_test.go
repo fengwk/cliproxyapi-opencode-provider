@@ -124,6 +124,15 @@ func (f *fakeHost) savedAuths() []savedAuth {
 	return append([]savedAuth(nil), f.saved...)
 }
 
+// addAuthFile mirrors a successful host.auth.save in later host.auth.list
+// responses so tests can exercise the import check-and-save against a host that
+// reflects persisted files.
+func (f *fakeHost) addAuthFile(entry pluginapi.HostAuthFileEntry) {
+	f.mu.Lock()
+	f.authFiles = append(f.authFiles, entry)
+	f.mu.Unlock()
+}
+
 func (f *fakeHost) requests() []HTTPDoRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()

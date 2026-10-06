@@ -77,13 +77,15 @@ type prepared struct {
 	clientResp  translator.Format
 	key         string
 	scope       string
+	run         chan struct{} // captured lifecycle run; closed stops this request
 	translated  []byte
 	original    []byte
 }
 
 // prepare validates and resolves everything needed before any upstream call.
 func (m *Manager) prepare(req rpcExecutorRequest, stream bool) (*prepared, error) {
-	if m.stopped() {
+	run, ok := m.beginRun()
+	if !ok {
 		return nil, &ProviderError{Code: "unavailable", Message: "plugin is shutting down", HTTPStatus: http.StatusServiceUnavailable}
 	}
 	cfg := m.config()
@@ -144,6 +146,7 @@ func (m *Manager) prepare(req rpcExecutorRequest, stream bool) (*prepared, error
 		clientResp:  clientResp,
 		key:         key,
 		scope:       scope,
+		run:         run,
 		translated:  translated,
 		original:    original,
 	}, nil
@@ -363,8 +366,9 @@ func (m *Manager) executeStream(req rpcExecutorRequest) error {
 		return &ProviderError{Code: "upstream_error", Message: "upstream stream bridge unavailable", HTTPStatus: http.StatusBadGateway}
 	}
 	// Register the downstream/upstream pair before the worker starts so shutdown
-	// can always unblock and wait for it.
-	if !m.registerStream(req.StreamID, start.StreamID) {
+	// can always unblock and wait for it. The captured run channel is required,
+	// so an upstream open delayed past a quiesce cannot start work after reopen.
+	if !m.registerStream(plan.run, req.StreamID, start.StreamID) {
 		m.bridge.HTTPStreamClose(start.StreamID)
 		return &ProviderError{Code: "unavailable", Message: "plugin is shutting down", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -398,8 +402,12 @@ func (m *Manager) pumpStream(req rpcExecutorRequest, plan *prepared, upstreamStr
 		if len(payload) == 0 {
 			return true
 		}
-		if m.stopped() {
+		// Check the run channel captured when this request was prepared, never the
+		// manager's current run, so a reopened manager cannot revive this worker.
+		select {
+		case <-plan.run:
 			return false
+		default:
 		}
 		return m.bridge.StreamEmit(req.StreamID, payload) == nil
 	}

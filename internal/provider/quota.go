@@ -19,7 +19,7 @@ const endpointUsage = "/usage"
 // quotaWindowNames fixes the published bucket order to the official windows.
 var quotaWindowNames = []string{"rolling", "weekly", "monthly"}
 
-// rpcQuotaRequest mirrors the host quota.fetch / quota.reset wire shape. The
+// rpcQuotaRequest mirrors the host quota.fetch wire shape. The
 // embedded request carries the selected credential; host_callback_id authorizes
 // the matching host.http.do call.
 type rpcQuotaRequest struct {
@@ -27,8 +27,8 @@ type rpcQuotaRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
-// quotaDescription advertises the single supported provider. Reset is never
-// supported, so the host can reject it without any upstream request.
+// quotaDescription advertises the single supported provider and a read-only
+// contract so management clients can omit the reset action.
 func quotaDescription() pluginapi.QuotaDescribeResponse {
 	return pluginapi.QuotaDescribeResponse{
 		SupportedProviders: []string{ProviderID},
@@ -120,9 +120,6 @@ func quotaInvalid() error {
 // a remaining fraction. Every failure is sanitized; raw upstream data is never
 // reflected.
 func normalizeQuota(body []byte) (pluginapi.QuotaFetchResponse, error) {
-	if !json.Valid(body) {
-		return pluginapi.QuotaFetchResponse{}, quotaInvalid()
-	}
 	var payload upstreamUsage
 	if err := json.Unmarshal(body, &payload); err != nil || payload.Usage == nil {
 		return pluginapi.QuotaFetchResponse{}, quotaInvalid()

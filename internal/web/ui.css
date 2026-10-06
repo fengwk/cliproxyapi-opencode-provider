@@ -306,7 +306,9 @@ td.cell-actions button + button {
 }
 
 .quota-table th:first-child,
-.quota-table td:first-child {
+.quota-table td:first-child,
+.quota-table td:nth-child(2),
+.quota-table td:nth-child(3) {
   white-space: nowrap;
 }
 

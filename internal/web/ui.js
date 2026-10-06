@@ -525,7 +525,6 @@ function initUi() {
   var endpoints = deriveEndpoints(window.location);
   var secureContext = false;
   var busy = false;
-  var selectedQuotaName = "";
 
   function setStatus(message, level) {
     el.status.textContent = message;
@@ -541,7 +540,6 @@ function initUi() {
 
   // Drop any rendered quota so a stale selection is never shown as current.
   function clearQuota() {
-    selectedQuotaName = "";
     el.quotaPanel.hidden = true;
     el.quotaSelection.textContent = "";
     while (el.quotaBody.firstChild) {
@@ -915,12 +913,7 @@ function initUi() {
     var rowName = toCellText(button.getAttribute("data-file-name"));
 
     // Clear the previous selection data before the new read starts.
-    selectedQuotaName = rowName;
-    el.quotaPanel.hidden = true;
-    el.quotaSelection.textContent = "";
-    while (el.quotaBody.firstChild) {
-      el.quotaBody.removeChild(el.quotaBody.firstChild);
-    }
+    clearQuota();
     setBusy(true);
     setQuotaStatus("正在查询配额…", "info");
 
@@ -947,7 +940,7 @@ function initUi() {
           setQuotaStatus("配额数据不可用，未显示任何配额信息。", "error");
           return;
         }
-        renderQuota(parsed, selectedQuotaName);
+        renderQuota(parsed, rowName);
         setQuotaStatus("已加载所选密钥的配额。", "ok");
       })
       .catch(function () {

@@ -4,6 +4,7 @@ CLIProxyAPI (CPA) 的 OpenCode Go 原生插件。独立仓库、独立动态库�
 
 支持 OpenAI Chat Completions、Anthropic Messages、OpenAI Responses 三种客户端协议，
 流式和非流式均可使用；协议转换直接复用 CPA 的公开 `sdk/translator` 与 `builtin`。
+支持通过 CPA 原生配额接口和插件页面查询 OpenCode Go 的滚动、周、月额度。
 
 ## 职责边界
 
@@ -92,6 +93,40 @@ curl http://127.0.0.1:8317/v1/chat/completions \
 否则插件仅对自己的模型将显式 `x-opencode-session` 适配为 CPA 的亲和头。
 没有显式信号时，仍由 CPA 自行识别会话，插件不再计算请求内容哈希。
 
+### 5. 查看 OpenCode Go 配额
+
+在同一个插件页面加载密钥列表，点击对应密钥的 **查看配额**，即可看到滚动、周、月
+窗口的剩余比例、已用比例和重置时间（UTC）。查询按点击触发；插件不轮询、不重试、
+不缓存配额，也不支持重置。列表刷新、导入或删除时会清除旧查询结果。
+
+这是上游账户的额度，不是 CPA 本机累计 token 统计。多个密钥可能属于同一订阅、共享
+额度，不能把它们的剩余量相加。上游目前提供百分比而非金额或绝对 token 余额；窗口
+周期和重置时间以上游响应为准，插件不硬编码滚动窗口时长或推算余额。
+
+插件注册 CPA 原生 `QuotaProvider`，让 `opencode-go` 凭据带有 `supports_quota: true`
+和 `quota_provider: opencode-go`。支持通用插件配额的管理前端可以直接展示。**官方管理
+前端的“配额管理”页目前仍只适配内置提供商，安装本插件不会自动增加该页面的卡片**；
+在前端完成适配前，请使用插件页或下面的原生 API，无需修改 CPA 核心。
+
+```bash
+# 使用 CPA 管理密钥；返回文件名、标签和查询所需的 auth_index，不返回上游密钥。
+curl http://127.0.0.1:8317/v0/management/plugins/cliproxyapi-opencode-provider/keys \
+  -H "Authorization: Bearer $CPA_MANAGEMENT_KEY"
+
+# AUTH_INDEX 取自上述已托管密钥列表。
+curl http://127.0.0.1:8317/v0/management/plugins/cliproxyapi-opencode-provider/quota \
+  -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"auth_index\":\"$AUTH_INDEX\"}"
+```
+
+同样可以使用 `POST /v0/management/quota/fetch`，或
+`GET /v8/management/plugins/cliproxyapi-opencode-provider/quota?auth_index=...`。
+发现接口为 `GET /v0/management/quota/providers`；以上接口均由 CPA 管理认证保护。
+每次查询通过宿主 HTTP 回调向配置的 `base-url` 追加 `/usage`，使用所选凭据进行一次
+只读 GET。网络错误、上游拒绝或格式错误会返回失败，不会显示虚构的剩余额度，
+也不会改变凭据的冷却或路由状态。
+
 ## 模型路由与缓存
 
 | 模型前缀 | 原生上游协议 |
@@ -143,6 +178,7 @@ make package                          # 需要 zip，输出 dist/pkg/
 - 文本、推理、tool calls、usage 与 cached tokens。
 - 多 key 429 故障转移、会话粘性、无显式信号的 CPA 会话回退。
 - 管理 API 认证、资源安全头、密钥导入/列表/删除与重启持久化。
+- 原生配额发现、凭据索引、三窗口映射、多 key 查询隔离、错误脱敏与只读重置拒绝。
 - SSE 分片和截断，禁止虚假的成功结束。
 
 维护流程：

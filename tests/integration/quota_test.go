@@ -270,6 +270,33 @@ func TestQuotaProviderDiscovery(t *testing.T) {
 			t.Errorf("credential %s quota_provider = %q, want %q", entry.Name, entry.QuotaProvider, providerID)
 		}
 	}
+
+	// The embedded UI receives the same safe host indexes, not upstream keys.
+	status, body = h.listKeys(t)
+	if status != http.StatusOK {
+		t.Fatalf("plugin key list status %d body %s", status, truncate(body, 400))
+	}
+	var listed struct {
+		Files []credentialEntry `json:"files"`
+	}
+	if err := json.Unmarshal(body, &listed); err != nil {
+		t.Fatalf("plugin key list: %v", err)
+	}
+	if len(listed.Files) != len(entries) {
+		t.Fatalf("plugin key list has %d rows, want %d", len(listed.Files), len(entries))
+	}
+	for _, row := range listed.Files {
+		matched := false
+		for _, entry := range entries {
+			if row.Name == entry.Name && row.AuthIndex == entry.AuthIndex && row.AuthIndex != "" {
+				matched = true
+			}
+		}
+		if !matched {
+			t.Errorf("UI quota lookup index does not match host credential: %+v", row)
+		}
+	}
+	assertListSanitized(t, body, h.authDir)
 }
 
 // TestQuotaFetchThreeWindows proves the normalized three-window mapping and the
@@ -452,6 +479,36 @@ func TestQuotaMalformedUpstreamIsSanitized(t *testing.T) {
 	for _, secret := range []string{keyAlpha, keyBeta} {
 		if strings.Contains(text, secret) {
 			t.Errorf("gateway error leaked credential %q: %s", secret, truncate(body, 300))
+		}
+	}
+	h.mock.requireClean(t)
+}
+
+// TestQuotaUpstreamFailuresAreReadOnly verifies refresh failures do not alter
+// routing state, echo raw upstream data, or cause plugin-side retries.
+func TestQuotaUpstreamFailuresAreReadOnly(t *testing.T) {
+	h := newHarness(t)
+	if status, body := h.importKeys(t, []string{keyAlpha}, "quota-errors"); status != http.StatusOK {
+		t.Fatalf("import keys status %d body %s", status, truncate(body, 400))
+	}
+	index := h.authIndexForKey(t, keyAlpha)
+	before := h.credentialStatus(t, keyAlpha)
+	for _, upstreamStatus := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		h.mock.reset()
+		h.mock.setQuotaResponse(upstreamStatus, "application/json", []byte(keyAlpha+" "+quotaMalformedMarker))
+		status, body := h.doJSON(t, http.MethodPost, "/v0/management/quota/fetch",
+			mustMarshal(map[string]any{"auth_index": index}), managementHeaders())
+		if status != http.StatusBadGateway {
+			t.Fatalf("upstream %d: host status %d body %s, want 502", upstreamStatus, status, truncate(body, 400))
+		}
+		if strings.Contains(string(body), keyAlpha) || strings.Contains(string(body), quotaMalformedMarker) {
+			t.Fatalf("upstream %d: quota failure leaked raw data", upstreamStatus)
+		}
+		if calls := len(h.mock.callsForPath(quotaUsagePath)); calls != 1 {
+			t.Fatalf("upstream %d: usage calls %d, want one without retry", upstreamStatus, calls)
+		}
+		if after := h.credentialStatus(t, keyAlpha); after != before {
+			t.Fatalf("upstream %d: refresh mutated routing state: %+v -> %+v", upstreamStatus, before, after)
 		}
 	}
 	h.mock.requireClean(t)

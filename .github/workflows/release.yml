@@ -61,7 +61,8 @@ jobs:
 
       - name: Package archive
         env:
-          GITHUB_SHA: ${{ steps.version.outputs.commit }}
+          # GITHUB_* variables are reserved; COMMIT identifies the checked-out tag.
+          COMMIT: ${{ steps.version.outputs.commit }}
         run: >-
           bash scripts/package-plugin.sh
           "${{ steps.version.outputs.version }}"

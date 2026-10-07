@@ -232,6 +232,7 @@ U = hex(SHA256(JSON(["opencode-go-session-v1", auth.ID, S])))
 make test                             # vet、Go 单测、Node 22+ UI 测试
 make race                             # Go race detector
 bash scripts/test-automerge.sh         # 自动合并安全边界
+bash scripts/test-compatibility-report.sh # 兼容性失败上报与恢复
 bash scripts/test-package-plugin.sh    # 真实 ZIP 布局与校验和
 python3 scripts/test_dependency_policy.py # Go / 官方 Actions 纯版本升级策略
 python3 scripts/test_auto_release.py      # 自动发版、竞态与恢复
@@ -251,7 +252,9 @@ make package                          # 需要 zip，输出 dist/pkg/
 
 维护流程：
 
-1. 每日兼容性 CI 使用**未改动插件 SDK**测试最新稳定 CPA v8 宿主。
+1. 每日兼容性 CI 使用**未改动插件 SDK**测试最新稳定 CPA v8 宿主；定时与手动触发都执行
+   最新宿主检查。失败运行保持红色，并建立去重的、由自动化自有的 GitHub issue，仅包含
+   运行链接，不公开日志或凭据；下一次通过后自动关闭该 issue。
 2. Dependabot 每日更新 Go 依赖，每周更新官方 GitHub Actions。所有 PR 跑单测、race、
    管理页测试、自动化安全策略、三个平台原生构建及最低/最新真实宿主测试。
 3. Go 更新必须保持模块路径、直接依赖集合及 CPA v8 不变；Actions 更新只能改变现有
@@ -269,8 +272,8 @@ make package                          # 需要 zip，输出 dist/pkg/
 
 普通功能、配置、权限修改与 CPA v9 迁移不会被当作依赖更新自动发布；失败保持旧正式
 版本可用，不伪装成成功。持续失败或越界更新仍需要诊断；自动化不能保证外部 API、
-权限、托管 runner 或未来破坏性变更永不需要人工介入。协调器异常会建立去重的
-GitHub issue，仅包含运行链接，不公开日志或凭据。
+权限、托管 runner 或未来破坏性变更永不需要人工介入。协调器异常与每日兼容性检查失败
+都会建立去重的、由自动化自有的 GitHub issue，仅包含运行链接，不公开日志或凭据。
 
 人工功能发版仍可对已验证提交推送 `vX.Y.Z` tag；CI artifacts 不是正式 Release。
 `registry.json` 不固定版本，新 Release 无需修改插件源。

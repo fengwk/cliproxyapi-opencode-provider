@@ -31,9 +31,12 @@ type workflowDoc struct {
 		CancelInProgress bool   `yaml:"cancel-in-progress"`
 	} `yaml:"concurrency"`
 	Jobs map[string]struct {
-		If          string            `yaml:"if"`
-		Permissions map[string]string `yaml:"permissions"`
-		Steps       []workflowStep    `yaml:"steps"`
+		If          string                 `yaml:"if"`
+		Needs       interface{}            `yaml:"needs"`
+		Uses        string                 `yaml:"uses"`
+		With        map[string]interface{} `yaml:"with"`
+		Permissions map[string]string      `yaml:"permissions"`
+		Steps       []workflowStep         `yaml:"steps"`
 	} `yaml:"jobs"`
 }
 

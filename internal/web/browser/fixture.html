@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPA management center theme fixture</title>
+<link rel="stylesheet" href="./fixture.css">
+</head>
+<body>
+<header class="host-header">
+  <span class="host-brand">CPA 管理面板主题宿主（夹具）</span>
+  <span class="host-note">data-theme 由测试脚本切换</span>
+</header>
+<main class="host-main">
+  <!-- Same-origin iframe of the real plugin UI asset: mirrors how the CPA
+       management center embeds a plugin resource page. -->
+  <iframe id="ui-frame" title="OpenCode Provider" src="/ui.html"></iframe>
+</main>
+</body>
+</html>

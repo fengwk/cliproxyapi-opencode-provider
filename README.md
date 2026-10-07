@@ -283,6 +283,29 @@ GitHub issue，仅包含运行链接，不公开日志或凭据。
 需要新的 SDK 转换逻辑时安装重新构建的插件，而不是手改转换器。
 启用仓库 GitHub Actions 与 Dependabot 后，这些检查和依赖更新会自动运行。
 
+## 界面主题
+
+内嵌管理页复用 CPA 管理中心的主题令牌，与其保持一致的排版、圆角与配色（暖灰浅色为
+默认、纯白与深色可选），页面无外部字体、无内联样式，兼容 CSP。
+
+- 内嵌于同源页面（例如 CPA 管理中心的资源页 iframe）时，读取父页面根元素上的
+  `data-theme`（`dark` / `white` / 无属性即暖灰浅色），并把父页面白名单设计令牌的
+  计算值复制到本页面；父页面切换主题时会实时同步。
+- 无父页面或父页面跨域时，回退到系统配色：系统深色使用深色主题，系统浅色使用纯白主题。
+- 仅读取父页面根元素的主题属性与白名单设计令牌（`--bg-*`、`--text-*`、`--border-*`、
+  `--primary-*`、语义色、圆角与阴影），绝不读取父页面的任何认证或凭据状态。
+
+浏览器视觉校验脚本位于 `internal/web/browser/`：
+
+```bash
+# Playwright 为临时外部依赖，不写入本仓库
+npm i playwright
+NODE_PATH="$(npm root)" SCREENSHOT_DIR=/tmp/opencode-theme-shots \
+  node internal/web/browser/theme-check.cjs
+```
+
+`make test` 另行运行 `node --test internal/web/ui.test.cjs`，其中已覆盖主题桥接的纯函数与内嵌/回退逻辑。
+
 ## 安全与许可证
 
 静态资源公开且不含密钥，密钥管理接口由 CPA 管理认证保护。UI 禁止非本机明文 HTTP

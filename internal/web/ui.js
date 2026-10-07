@@ -493,6 +493,153 @@ function buildManagementRequest(key, options) {
   return init;
 }
 
+/* ------------------------------------------------------------------- theming */
+
+// Only these non-secret design tokens may ever be copied from the host page.
+// They are the exact token names used by the CPA management center theme.
+var THEME_TOKENS = [
+  "--bg-secondary", "--bg-primary", "--bg-tertiary", "--bg-hover",
+  "--text-primary", "--text-secondary", "--text-tertiary",
+  "--muted-bg", "--muted-foreground", "--accent-bg",
+  "--border-color", "--border-primary", "--border-hover",
+  "--primary-color", "--primary-hover", "--primary-active", "--primary-contrast",
+  "--success-color", "--warning-color", "--error-color", "--danger-color",
+  "--radius-md", "--radius-lg", "--shadow", "--shadow-lg"
+];
+
+// Choose the theme attribute for our own root. A same-origin host signal wins;
+// a standalone page follows the system preference (matching the host's auto
+// theme, where a light system resolves to the pure-white theme).
+function resolveAppliedTheme(parentTheme, systemPrefersDark) {
+  if (parentTheme === "dark" || parentTheme === "white" || parentTheme === "light") {
+    return parentTheme;
+  }
+  return systemPrefersDark ? "dark" : "white";
+}
+
+// Read only the host page's theme signal. Returns null when there is no
+// accessible same-origin parent, and never throws on cross-origin access.
+function readParentTheme(parentWindow) {
+  try {
+    if (!parentWindow || (typeof window !== "undefined" && parentWindow === window)) {
+      return null;
+    }
+    var parentDocument = parentWindow.document;
+    if (!parentDocument || !parentDocument.documentElement) {
+      return null;
+    }
+    var theme = parentDocument.documentElement.getAttribute("data-theme");
+    if (theme === "dark" || theme === "white") {
+      return theme;
+    }
+    // The host uses no attribute for its warm-grey light default.
+    return "light";
+  } catch (err) {
+    return null;
+  }
+}
+
+// Keep only whitelisted, non-empty token values returned by a reader.
+function collectThemeTokens(readToken) {
+  var tokens = {};
+  if (typeof readToken !== "function") {
+    return tokens;
+  }
+  for (var i = 0; i < THEME_TOKENS.length; i++) {
+    var name = THEME_TOKENS[i];
+    var value = readToken(name);
+    if (typeof value === "string") {
+      value = value.trim();
+      if (value) {
+        tokens[name] = value;
+      }
+    }
+  }
+  return tokens;
+}
+
+// Apply the resolved theme, then best-effort copy the host's whitelisted
+// computed tokens so a host theme change is matched exactly. Every host access
+// is guarded: a detached or cross-origin parent just keeps our built-in tokens.
+function applyThemeToRoot(root, applied, parentWindow) {
+  root.setAttribute("data-theme", applied);
+  if (!parentWindow || typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
+    return;
+  }
+  var tokens = {};
+  try {
+    var hostRoot = parentWindow.document.documentElement;
+    var hostStyle = window.getComputedStyle(hostRoot);
+    tokens = collectThemeTokens(function (name) {
+      return hostStyle.getPropertyValue(name);
+    });
+  } catch (err) {
+    // Detached or cross-origin host: the built-in theme tokens stay in effect.
+    tokens = {};
+  }
+  // Reset then re-apply so a token the host no longer defines is never stale.
+  for (var i = 0; i < THEME_TOKENS.length; i++) {
+    var name = THEME_TOKENS[i];
+    if (typeof root.style.removeProperty === "function") {
+      root.style.removeProperty(name);
+    }
+    if (Object.prototype.hasOwnProperty.call(tokens, name)) {
+      root.style.setProperty(name, tokens[name]);
+    }
+  }
+}
+
+function prefersDarkScheme() {
+  try {
+    return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  } catch (err) {
+    return false;
+  }
+}
+
+// Bridge our page to the embedding CPA management center theme. No host auth or
+// credential state is read; only the theme attribute and whitelisted tokens.
+function initTheme() {
+  if (typeof document === "undefined" || !document.documentElement) {
+    return;
+  }
+  var root = document.documentElement;
+  var hostWindow = typeof window !== "undefined" ? window.parent : null;
+  var hostTheme = readParentTheme(hostWindow);
+
+  function reapply() {
+    var observed = readParentTheme(hostWindow);
+    applyThemeToRoot(root, resolveAppliedTheme(observed, prefersDarkScheme()), observed === null ? null : hostWindow);
+  }
+
+  reapply();
+
+  // Live-sync the host theme toggle, guarded for cross-origin parents.
+  if (hostTheme !== null && typeof MutationObserver === "function") {
+    try {
+      var observer = new MutationObserver(reapply);
+      observer.observe(hostWindow.document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"]
+      });
+    } catch (err) {
+      // Cross-origin: no live sync, the resolved theme still applies.
+    }
+  }
+
+  // A standalone page follows the system preference live.
+  if (hostTheme === null) {
+    try {
+      var media = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+      if (media && typeof media.addEventListener === "function") {
+        media.addEventListener("change", reapply);
+      }
+    } catch (err) {
+      // No live system sync available.
+    }
+  }
+}
+
 var api = {
   PLUGIN_ID: PLUGIN_ID,
   MAX_KEYS: MAX_KEYS,
@@ -520,7 +667,11 @@ var api = {
   describeQuotaFailure: describeQuotaFailure,
   countNotice: countNotice,
   formatImportResult: formatImportResult,
-  buildManagementRequest: buildManagementRequest
+  buildManagementRequest: buildManagementRequest,
+  THEME_TOKENS: THEME_TOKENS,
+  resolveAppliedTheme: resolveAppliedTheme,
+  readParentTheme: readParentTheme,
+  collectThemeTokens: collectThemeTokens
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -1012,6 +1163,7 @@ function initUi() {
 }
 
 if (typeof document !== "undefined" && typeof window !== "undefined" && document.getElementById) {
+  initTheme();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", initUi);
   } else {

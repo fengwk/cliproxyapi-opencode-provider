@@ -915,3 +915,142 @@ test("off-loopback plaintext keeps the key and label inputs disabled", async () 
   assert.equal(get("mgmt-key").disabled, true);
   assert.equal(get("import-btn").disabled, true);
 });
+
+/* --------------------------------------------------------------- theme bridge */
+
+test("resolveAppliedTheme mirrors the host theme and falls back to the system scheme", () => {
+  assert.equal(ui.resolveAppliedTheme("dark", false), "dark");
+  assert.equal(ui.resolveAppliedTheme("white", true), "white");
+  assert.equal(ui.resolveAppliedTheme("light", true), "light");
+  // No host signal: follow the system, where the host's auto theme maps light
+  // to the pure-white theme.
+  assert.equal(ui.resolveAppliedTheme(null, true), "dark");
+  assert.equal(ui.resolveAppliedTheme(null, false), "white");
+  assert.equal(ui.resolveAppliedTheme(undefined, false), "white");
+  // An unexpected host value is never trusted as a theme name.
+  assert.equal(ui.resolveAppliedTheme("solarized", false), "white");
+});
+
+test("readParentTheme trusts only a same-origin parent and defaults to light", () => {
+  const withAttr = (attr) => ({ document: { documentElement: { getAttribute: () => attr } } });
+  assert.equal(ui.readParentTheme(null), null);
+  assert.equal(ui.readParentTheme(undefined), null);
+  // No data-theme attribute is the host's warm-grey light default.
+  assert.equal(ui.readParentTheme(withAttr(null)), "light");
+  assert.equal(ui.readParentTheme(withAttr("light")), "light");
+  assert.equal(ui.readParentTheme(withAttr("white")), "white");
+  assert.equal(ui.readParentTheme(withAttr("dark")), "dark");
+  // A cross-origin parent throws on access and must fall back, never propagate.
+  const crossOrigin = { get document() { throw new Error("blocked by the same-origin policy"); } };
+  assert.equal(ui.readParentTheme(crossOrigin), null);
+  // A detached/empty window is not mistaken for a light host.
+  assert.equal(ui.readParentTheme({}), null);
+});
+
+test("collectThemeTokens copies only whitelisted, non-empty tokens", () => {
+  const provided = {};
+  for (const name of ui.THEME_TOKENS) {
+    provided[name] = "  " + name + "-value  ";
+  }
+  provided["--bg-primary"] = "   "; // blank value is dropped
+  provided["--leaked-secret"] = "do-not-copy"; // not whitelisted
+  const tokens = ui.collectThemeTokens((name) => provided[name]);
+  assert.equal(tokens["--bg-secondary"], "--bg-secondary-value");
+  assert.equal(Object.prototype.hasOwnProperty.call(tokens, "--bg-primary"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(tokens, "--leaked-secret"), false);
+  assert.deepEqual(ui.collectThemeTokens(null), {});
+});
+
+test("THEME_TOKENS is a bounded, non-secret custom-property whitelist", () => {
+  assert.ok(ui.THEME_TOKENS.length > 0);
+  assert.equal(new Set(ui.THEME_TOKENS).size, ui.THEME_TOKENS.length);
+  for (const name of ui.THEME_TOKENS) {
+    assert.match(name, /^--[a-z-]+$/, name + " must be a plain custom property");
+    assert.equal(/secret|password|credential|authorization|bearer/i.test(name), false, name + " must not cover secret state");
+  }
+});
+
+// Boot the real ui.js with a scripted host window so the theme bridge runs.
+function bootThemeUi(options) {
+  const opts = options || {};
+  const root = {
+    attributes: {},
+    styleProps: {},
+    getAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null;
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+    style: {
+      _props: {},
+      setProperty(name, value) {
+        this._props[name] = value;
+      },
+      removeProperty(name) {
+        delete this._props[name];
+      }
+    }
+  };
+  const parentWindow = opts.crossOrigin
+    ? { get document() { throw new Error("cross-origin"); } }
+    : { document: { documentElement: { getAttribute: () => (opts.parentTheme === undefined ? null : opts.parentTheme) } } };
+  const elements = new Map();
+  const getElement = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, {
+        value: "", disabled: false, hidden: false, textContent: "", className: "",
+        handlers: {},
+        addEventListener(name, handler) { this.handlers[name] = handler; },
+        querySelectorAll() { return []; }
+      });
+    }
+    return elements.get(id);
+  };
+  const hostTokens = opts.hostTokens || {};
+  vm.runInNewContext(readAsset("ui.js"), {
+    document: {
+      readyState: "complete",
+      documentElement: root,
+      getElementById: getElement,
+      addEventListener() {}
+    },
+    window: {
+      location: {
+        protocol: "http:", hostname: "127.0.0.1",
+        pathname: "/v0/resource/plugins/cliproxyapi-opencode-provider/ui"
+      },
+      parent: opts.hostPresent === false ? undefined : parentWindow,
+      matchMedia: () => ({ matches: Boolean(opts.systemDark), addEventListener() {} }),
+      getComputedStyle: () => ({
+        getPropertyValue: (name) => (Object.prototype.hasOwnProperty.call(hostTokens, name) ? hostTokens[name] : "")
+      })
+    },
+    TextEncoder
+  });
+  return root;
+}
+
+test("initTheme mirrors the host data-theme and copies whitelisted computed tokens", () => {
+  const root = bootThemeUi({
+    parentTheme: "dark",
+    hostTokens: { "--bg-secondary": "#151412", "--text-primary": "#f6f4f1", "--leaked-secret": "#000" }
+  });
+  assert.equal(root.getAttribute("data-theme"), "dark");
+  assert.equal(root.style._props["--bg-secondary"], "#151412");
+  assert.equal(root.style._props["--text-primary"], "#f6f4f1");
+  // Only whitelisted tokens are copied from the host.
+  assert.equal(Object.prototype.hasOwnProperty.call(root.style._props, "--leaked-secret"), false);
+});
+
+test("initTheme keeps the host light default even when the system prefers dark", () => {
+  const root = bootThemeUi({ parentTheme: null, systemDark: true });
+  assert.equal(root.getAttribute("data-theme"), "light");
+});
+
+test("initTheme falls back to the system scheme for a cross-origin or absent parent", () => {
+  assert.equal(bootThemeUi({ crossOrigin: true, systemDark: true }).getAttribute("data-theme"), "dark");
+  assert.equal(bootThemeUi({ crossOrigin: true, systemDark: false }).getAttribute("data-theme"), "white");
+  assert.equal(bootThemeUi({ hostPresent: false, systemDark: true }).getAttribute("data-theme"), "dark");
+  assert.equal(bootThemeUi({ hostPresent: false, systemDark: false }).getAttribute("data-theme"), "white");
+});

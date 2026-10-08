@@ -73,6 +73,9 @@ function deriveEndpoints(locationLike) {
   return {
     prefix: prefix,
     keysUrl: prefix + "/v0/management/plugins/" + PLUGIN_ID + "/keys",
+    settingsUrl: prefix + "/v0/management/plugins/" + PLUGIN_ID + "/settings",
+    validateUrl: prefix + "/v0/management/plugins/" + PLUGIN_ID + "/validate",
+    configUrl: prefix + "/v0/management/plugins/" + PLUGIN_ID + "/config",
     credentialsUrl: prefix + "/v8/management/credentials",
     quotaUrl: prefix + "/v0/management/plugins/" + PLUGIN_ID + "/quota"
   };
@@ -674,6 +677,28 @@ var api = {
   collectThemeTokens: collectThemeTokens
 };
 
+function normalizeManualModels(raw) {
+  if (!Array.isArray(raw) || raw.length > 100) throw new Error("手动模型必须是最多 100 项的列表。");
+  var seen = new Set();
+  return raw.map(function (item) {
+    if (!isPlainObject(item) || typeof item.id !== "string") throw new Error("模型 ID 无效。");
+    var id = item.id.trim().replace(/^opencode-go\//, "");
+    if (!id || /^opencode-go\//.test(id) || /[\s\u0000-\u001f\u007f-\u009f]/.test(id) || utf8ByteLength(id) > 200 || seen.has(id)) {
+      throw new Error("模型 ID 必须唯一、不含空白或控制字符，且不超过 200 字节。");
+    }
+    seen.add(id);
+    var protocol = item.protocol === undefined ? "" : item.protocol;
+    if (typeof protocol !== "string" || ["", "openai", "claude", "openai-response"].indexOf(protocol) < 0) {
+      throw new Error("请选择受支持的上游协议。");
+    }
+    if (!protocol && !/^(minimax|qwen|gpt|grok|muse-spark|glm|kimi|deepseek|longcat|mimo|hy|space-bunny)/i.test(id)) {
+      throw new Error("未知模型族必须指定上游协议。");
+    }
+    return protocol ? { id: id, protocol: protocol } : { id: id };
+  });
+}
+api.normalizeManualModels = normalizeManualModels;
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = api;
 }
@@ -710,6 +735,16 @@ function initUi() {
   var endpoints = deriveEndpoints(window.location);
   var secureContext = false;
   var busy = false;
+  var manualDraft = [];
+  var modelsLoaded = false;
+  var modelsDirty = false;
+  var modelBody = doc.getElementById("manual-model-body");
+  var modelStatus = doc.getElementById("manual-model-status");
+  var modelId = doc.getElementById("manual-model-id");
+  var modelProtocol = doc.getElementById("manual-model-protocol");
+  var modelSave = doc.getElementById("manual-model-save");
+  var modelReload = doc.getElementById("manual-model-reload");
+  var modelAdd = doc.getElementById("manual-model-add");
 
   function setStatus(message, level) {
     el.status.textContent = message;
@@ -739,6 +774,13 @@ function initUi() {
     el.refreshBtn.disabled = disabled;
     el.importBtn.disabled = disabled;
     el.reloadBtn.disabled = disabled;
+    el.mgmtKey.disabled = disabled;
+    modelId.disabled = disabled || !modelsLoaded;
+    modelProtocol.disabled = disabled || !modelsLoaded;
+    modelAdd.disabled = disabled || !modelsLoaded;
+    modelReload.disabled = disabled;
+    modelSave.disabled = disabled || !modelsLoaded || !modelsDirty;
+    modelBody.querySelectorAll("button").forEach(function (button) { button.disabled = disabled; });
     // Lock the key inputs while busy so an in-flight response can never clear
     // text the user typed after submitting.
     el.keys.disabled = disabled;
@@ -925,6 +967,7 @@ function initUi() {
         // Drop the key reference held by this scope once the request has settled.
         managementKey = "";
         setBusy(false);
+        if (!modelsDirty && currentKey()) loadManualModels();
       });
   }
 
@@ -1147,6 +1190,149 @@ function initUi() {
   el.authForm.addEventListener("submit", function (event) {
     event.preventDefault();
     refreshList();
+  });
+  function renderManualModels() {
+    while (modelBody.firstChild) modelBody.removeChild(modelBody.firstChild);
+    if (!manualDraft.length) {
+      var empty = doc.createElement("tr");
+      var td = appendCell(empty, modelsLoaded ? "未手动注册模型。" : "尚未加载。", "empty-cell");
+      td.colSpan = 3;
+      modelBody.appendChild(empty);
+    }
+    manualDraft.forEach(function (model, index) {
+      var row = doc.createElement("tr");
+      appendCell(row, model.id, "cell-name");
+      appendCell(row, model.protocol || "自动");
+      var actions = doc.createElement("td");
+      var remove = doc.createElement("button");
+      remove.type = "button";
+      remove.textContent = "删除";
+      remove.disabled = busy || !secureContext;
+      remove.addEventListener("click", function () {
+        if (busy || !secureContext) return;
+        manualDraft.splice(index, 1);
+        modelsDirty = true;
+        renderManualModels();
+        modelStatus.textContent = "有未保存的模型草稿。";
+        setBusy(false);
+      });
+      actions.appendChild(remove);
+      row.appendChild(actions);
+      modelBody.appendChild(row);
+    });
+  }
+
+  async function manualRequest(url, method, payload, key, signal) {
+    if (currentKey() !== key || signal.aborted) throw new Error("连接已变更或操作超时。");
+    var init = buildManagementRequest(key, { method: method, body: payload === undefined ? undefined : JSON.stringify(payload) });
+    init.signal = signal;
+    init.redirect = "error";
+    var response = await fetch(url, init);
+    if (currentKey() !== key || signal.aborted) throw new Error("连接已变更或操作超时。");
+    if (response.status === 401 || response.status === 403) {
+      disconnect();
+      throw new Error("管理认证失败，请核对管理密钥。");
+    }
+    if (!response.ok) {
+      var err = new Error("管理请求失败（HTTP " + response.status + "）。");
+      err.status = response.status;
+      throw err;
+    }
+    return response.json();
+  }
+
+  async function loadManualModels() {
+    if (busy || !secureContext || !currentKey()) return;
+    var key = currentKey();
+    var controller = new AbortController();
+    var timer = window.setTimeout(function () { controller.abort(); }, 15000);
+    setBusy(true);
+    modelStatus.textContent = "正在加载生效模型…";
+    try {
+      var settings = await manualRequest(endpoints.settingsUrl, "GET", undefined, key, controller.signal);
+      if (currentKey() !== key || controller.signal.aborted) throw new Error("连接已变更或操作超时。");
+      manualDraft = normalizeManualModels(settings["manual-models"]);
+      modelsLoaded = true;
+      modelsDirty = false;
+      renderManualModels();
+      modelStatus.textContent = "已加载当前生效的手动模型。";
+    } catch (_) {
+      modelStatus.textContent = "加载失败，现有草稿保留；请核对管理认证与插件状态。";
+    } finally {
+      key = "";
+      window.clearTimeout(timer);
+      setBusy(false);
+    }
+  }
+
+  async function saveManualModels() {
+    if (busy || !secureContext || !modelsLoaded || !modelsDirty || !currentKey()) return;
+    var patch;
+    try { patch = { "manual-models": normalizeManualModels(manualDraft) }; }
+    catch (err) { modelStatus.textContent = err.message; return; }
+    var key = currentKey();
+    var controller = new AbortController();
+    var timer = window.setTimeout(function () { controller.abort(); }, 15000);
+    var writeAttempted = false;
+    setBusy(true);
+    modelStatus.textContent = "正在校验并保存…";
+    try {
+      var valid = await manualRequest(endpoints.validateUrl, "POST", patch, key, controller.signal);
+      if (valid.valid !== true) throw new Error("服务端未确认校验通过。");
+      writeAttempted = true;
+      await manualRequest(endpoints.configUrl, "PATCH", patch, key, controller.signal);
+      var confirmed = false;
+      for (var i = 0; i <= 20; i++) {
+        try {
+          var values = await Promise.all([
+            manualRequest(endpoints.configUrl, "GET", undefined, key, controller.signal),
+            manualRequest(endpoints.settingsUrl, "GET", undefined, key, controller.signal)
+          ]);
+          var saved = normalizeManualModels(values[0]["manual-models"]);
+          var effective = normalizeManualModels(values[1]["manual-models"]);
+          if (JSON.stringify(saved) === JSON.stringify(patch["manual-models"]) &&
+              JSON.stringify(effective) === JSON.stringify(patch["manual-models"])) {
+            confirmed = true;
+            break;
+          }
+        } catch (err) {
+          if (err.status !== 503) throw err;
+        }
+        if (controller.signal.aborted || currentKey() !== key) throw new Error("确认超时或连接已变更。");
+        if (i < 20) await new Promise(function (resolve) { window.setTimeout(resolve, 500); });
+      }
+      if (!confirmed || controller.signal.aborted || currentKey() !== key) throw new Error("未确认配置生效。");
+      manualDraft = patch["manual-models"];
+      modelsDirty = false;
+      renderManualModels();
+      modelStatus.textContent = "已保存并确认手动模型配置生效。";
+    } catch (_) {
+      modelStatus.textContent = writeAttempted
+        ? "可能已写入，但未确认生效；草稿保留，请重新加载核对。"
+        : "校验或保存失败，未发出写入请求；草稿保留。";
+    } finally {
+      key = "";
+      window.clearTimeout(timer);
+      setBusy(false);
+    }
+  }
+
+  modelAdd.addEventListener("click", function () {
+    if (busy || !secureContext || !modelsLoaded) return;
+    try {
+      manualDraft = normalizeManualModels(manualDraft.concat([{ id: modelId.value, protocol: modelProtocol.value }]));
+      modelsDirty = true;
+      modelId.value = "";
+      renderManualModels();
+      modelStatus.textContent = "有未保存的模型草稿。";
+      setBusy(false);
+    } catch (err) { modelStatus.textContent = err.message; }
+  });
+  modelSave.addEventListener("click", saveManualModels);
+  modelReload.addEventListener("click", loadManualModels);
+  el.mgmtKey.addEventListener("input", function () {
+    manualDraft = []; modelsLoaded = false; modelsDirty = false;
+    renderManualModels(); setBusy(busy);
   });
   el.importForm.addEventListener("submit", function (event) {
     event.preventDefault();

@@ -47,8 +47,8 @@ func TestUIResourcesPublic(t *testing.T) {
 		if got := header.Get("Content-Type"); !strings.Contains(got, tc.contentType) {
 			t.Errorf("GET %s Content-Type = %q, want to contain %q", tc.path, got, tc.contentType)
 		}
-		// The host must preserve same-origin iframe support without widening other directives.
-		wantCSP := "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'"
+		// The host must preserve iframe support and block native secret form submissions.
+		wantCSP := "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
 		if csp := header.Get("Content-Security-Policy"); csp != wantCSP {
 			t.Errorf("GET %s CSP = %q, want %q", tc.path, csp, wantCSP)
 		}

@@ -1,0 +1,83 @@
+/* Test-only host fixture.
+ *
+ * Reproduces the CPA management center theme token contract (warm-grey light
+ * default, pure white, dark) so the embedded plugin UI can be validated against
+ * a same-origin parent, exactly like management-center/src/styles/themes.scss.
+ * Not embedded into the plugin binary.
+ */
+
+:root {
+  color-scheme: light;
+  --bg-secondary: #faf9f5;
+  --bg-primary: #f0eee8;
+  --bg-tertiary: #e9e6df;
+  --text-primary: #2d2a26;
+  --text-secondary: #6d6760;
+  --muted-bg: var(--bg-tertiary);
+  --muted-foreground: var(--text-secondary);
+  --accent-bg: var(--bg-tertiary);
+  --border-color: #e3e1db;
+  --primary-color: #8b8680;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow: 0 1px 2px 0 rgb(0 0 0 / 0.08);
+}
+
+[data-theme="white"] {
+  --bg-secondary: #ffffff;
+  --bg-primary: #ffffff;
+  --bg-tertiary: #f6f6f6;
+  --border-color: #e5e5e5;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-secondary: #151412;
+  --bg-primary: #1d1b18;
+  --bg-tertiary: #262320;
+  --text-primary: #f6f4f1;
+  --text-secondary: #c9c3bb;
+  --border-color: #3a3530;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
+}
+
+.host-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  height: 56px;
+  padding: 0 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.host-brand {
+  font-weight: 700;
+}
+
+.host-note {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.host-main {
+  padding: 1rem;
+}
+
+#ui-frame {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 56px - 2rem);
+  min-height: 640px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+}

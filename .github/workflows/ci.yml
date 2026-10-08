@@ -47,6 +47,7 @@ jobs:
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
           bash scripts/test-automerge.sh
+          bash scripts/test-compatibility-report.sh
           bash scripts/test-package-plugin.sh
           python3 scripts/test_dependency_policy.py
           python3 scripts/test_auto_release.py

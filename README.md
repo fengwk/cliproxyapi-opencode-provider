@@ -232,6 +232,7 @@ U = hex(SHA256(JSON(["opencode-go-session-v1", auth.ID, S])))
 make test                             # vet、Go 单测、Node 22+ UI 测试
 make race                             # Go race detector
 bash scripts/test-automerge.sh         # 自动合并安全边界
+bash scripts/test-compatibility-report.sh # 兼容性失败上报与恢复
 bash scripts/test-package-plugin.sh    # 真实 ZIP 布局与校验和
 python3 scripts/test_dependency_policy.py # Go / 官方 Actions 纯版本升级策略
 python3 scripts/test_auto_release.py      # 自动发版、竞态与恢复
@@ -251,7 +252,9 @@ make package                          # 需要 zip，输出 dist/pkg/
 
 维护流程：
 
-1. 每日兼容性 CI 使用**未改动插件 SDK**测试最新稳定 CPA v8 宿主。
+1. 每日兼容性 CI 使用**未改动插件 SDK**测试最新稳定 CPA v8 宿主；定时与手动触发都执行
+   最新宿主检查。失败运行保持红色，并建立去重的、由自动化自有的 GitHub issue，仅包含
+   运行链接，不公开日志或凭据；下一次通过后自动关闭该 issue。
 2. Dependabot 每日更新 Go 依赖，每周更新官方 GitHub Actions。所有 PR 跑单测、race、
    管理页测试、自动化安全策略、三个平台原生构建及最低/最新真实宿主测试。
 3. Go 更新必须保持模块路径、直接依赖集合及 CPA v8 不变；Actions 更新只能改变现有
@@ -269,8 +272,8 @@ make package                          # 需要 zip，输出 dist/pkg/
 
 普通功能、配置、权限修改与 CPA v9 迁移不会被当作依赖更新自动发布；失败保持旧正式
 版本可用，不伪装成成功。持续失败或越界更新仍需要诊断；自动化不能保证外部 API、
-权限、托管 runner 或未来破坏性变更永不需要人工介入。协调器异常会建立去重的
-GitHub issue，仅包含运行链接，不公开日志或凭据。
+权限、托管 runner 或未来破坏性变更永不需要人工介入。协调器异常与每日兼容性检查失败
+都会建立去重的、由自动化自有的 GitHub issue，仅包含运行链接，不公开日志或凭据。
 
 人工功能发版仍可对已验证提交推送 `vX.Y.Z` tag；CI artifacts 不是正式 Release。
 `registry.json` 不固定版本，新 Release 无需修改插件源。
@@ -282,6 +285,29 @@ GitHub issue，仅包含运行链接，不公开日志或凭据。
 宿主升级不会更新已经编译进插件的 translator。宿主自己的池化/亲和逻辑可独立升级；
 需要新的 SDK 转换逻辑时安装重新构建的插件，而不是手改转换器。
 启用仓库 GitHub Actions 与 Dependabot 后，这些检查和依赖更新会自动运行。
+
+## 界面主题
+
+内嵌管理页复用 CPA 管理中心的主题令牌，与其保持一致的排版、圆角与配色（暖灰浅色为
+默认、纯白与深色可选），页面无外部字体、无内联样式，兼容 CSP。
+
+- 内嵌于同源页面（例如 CPA 管理中心的资源页 iframe）时，读取父页面根元素上的
+  `data-theme`（`dark` / `white` / 无属性即暖灰浅色），并把父页面白名单设计令牌的
+  计算值复制到本页面；父页面切换主题时会实时同步。
+- 无父页面或父页面跨域时，回退到系统配色：系统深色使用深色主题，系统浅色使用纯白主题。
+- 仅读取父页面根元素的主题属性与白名单设计令牌（`--bg-*`、`--text-*`、`--border-*`、
+  `--primary-*`、语义色、圆角与阴影），绝不读取父页面的任何认证或凭据状态。
+
+浏览器视觉校验脚本位于 `internal/web/browser/`：
+
+```bash
+# Playwright 为临时外部依赖，不写入本仓库
+npm i playwright
+NODE_PATH="$(npm root)" SCREENSHOT_DIR=/tmp/opencode-theme-shots \
+  node internal/web/browser/theme-check.cjs
+```
+
+`make test` 另行运行 `node --test internal/web/ui.test.cjs`，其中已覆盖主题桥接的纯函数与内嵌/回退逻辑。
 
 ## 安全与许可证
 

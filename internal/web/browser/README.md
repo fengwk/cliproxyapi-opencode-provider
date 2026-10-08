@@ -23,7 +23,9 @@ exactly one policy), and drives a headless browser to validate:
 - with JavaScript disabled or `ui.js` aborted, both native forms are blocked by
   `form-action 'none'`: Chromium's CSP console diagnostic is observed, the URL
   stays unchanged, and neither browser requests nor server query/body contain
-  the fake management / OpenCode keys (no real credentials are used);
+  the fake management / OpenCode keys (no real credentials are used). Each of
+  the four submissions also checks that FormData excludes both sensitive
+  fields and the CSP diagnostic contains neither fake key;
 - normal JavaScript GET / POST fetches still succeed against local route mocks
   under the production policy, including successful import input cleanup.
 
@@ -31,6 +33,13 @@ The Go resource-route test separately asserts the actual Management response
 headers for all three public assets, including `base-uri 'none'` and
 `form-action 'none'`. Browser checks synchronize on explicit CSP diagnostics and
 UI completion, not fixed sleeps.
+
+The sensitive `#mgmt-key` and `#keys` controls intentionally have no `name`
+attribute: JavaScript reads them by ID, while native form serialization omits
+them. This prevents even blocked form submissions from constructing key-bearing
+URLs in CSP console diagnostics. The non-sensitive label remains named.
+A dependency-free Node static regression guards both sensitive controls against
+reintroducing a `name` attribute.
 
 `fixture.html` / `fixture.css` reproduce the CPA management center theme token
 contract as a same-origin parent. Playwright resolves a local Chrome first

@@ -172,6 +172,12 @@ async function checkNativeForms(browser, base, serverRequests, mode) {
       }
       await page.locator("#mgmt-key").fill(secrets[0]);
       await page.locator("#keys").fill(secrets[1]);
+      await page.locator("#label").fill("public-label");
+      // Test instrumentation does not enable application scripts in the disabled context.
+      const entries = await page.evaluate(() =>
+        ["auth-form", "import-form"].map((id) => [...new FormData(document.getElementById(id)).entries()]));
+      check(mode + ": " + button + " excludes secrets from FormData",
+        JSON.stringify(entries) === JSON.stringify([[], [["label", "public-label"]]]), JSON.stringify(entries));
       // Chromium emits this diagnostic even with page JavaScript disabled.
       const violation = page.waitForEvent("console", {
         predicate: (message) => message.type() === "error" &&
@@ -180,6 +186,8 @@ async function checkNativeForms(browser, base, serverRequests, mode) {
       // CSP cancels the scheduled navigation; wait for its diagnostic instead.
       await page.locator(button).click({ noWaitAfter: true });
       const message = await violation;
+      check(mode + ": " + button + " CSP diagnostic contains no secret",
+        secrets.every((secret) => !message.text().includes(secret)), message.text());
       check(mode + ": " + button + " blocked by form-action", true, message.text());
       check(mode + ": " + button + " leaves URL unchanged", page.url() === url, page.url());
       await page.close();

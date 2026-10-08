@@ -22,7 +22,7 @@
     <form id="auth-form" autocomplete="off">
       <div class="field">
         <label for="mgmt-key">CPA 管理密钥</label>
-        <input id="mgmt-key" name="mgmt-key" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" aria-describedby="mgmt-key-hint">
+        <input id="mgmt-key" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" aria-describedby="mgmt-key-hint">
         <p id="mgmt-key-hint" class="hint">远程访问需在 CPA 中启用远程管理（remote management）；密钥错误多次可能导致当前 IP 被临时封禁，本页面不会自动重试认证。</p>
       </div>
       <div class="actions">
@@ -37,7 +37,7 @@
     <form id="import-form" autocomplete="off">
       <div class="field">
         <label for="keys">OpenCode Go 密钥（每行一个）</label>
-        <textarea id="keys" name="keys" rows="6" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="keys-hint"></textarea>
+        <textarea id="keys" rows="6" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="keys-hint"></textarea>
         <p id="keys-hint" class="hint">密钥仅随本次导入请求发送；导入成功后输入框会被清空，失败时会保留内容以便修改。</p>
       </div>
       <div class="field">

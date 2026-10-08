@@ -279,6 +279,16 @@ test("ui.html is CSP-safe and wires the embedded assets", () => {
   assert.ok(html.includes("routing.session-affinity: true"));
 });
 
+// Unnamed secret controls cannot enter native form URLs or CSP diagnostics.
+test("ui.html excludes sensitive controls from native form serialization", () => {
+  const html = readAsset("ui.html");
+  for (const id of ["mgmt-key", "keys"]) {
+    const controls = html.match(new RegExp(`<(?:input|textarea)\\b[^>]*\\bid=["']${id}["'][^>]*>`, "gi"));
+    assert.equal(controls && controls.length, 1, `expected one sensitive control: ${id}`);
+    assert.doesNotMatch(controls[0], /\sname(?:\s|=|\/?>)/i, `${id} must not have a name attribute`);
+  }
+});
+
 test("ui.html shows the plugin display name and keeps the technical ID", () => {
   const html = readAsset("ui.html");
   assert.ok(html.includes("<title>OpenCode Provider · 密钥与配额管理</title>"));

@@ -15,6 +15,8 @@
  *   - whitelisted host tokens are copied into the iframe
  *   - standalone dark/light follows the system preference
  *   - a 390px viewport renders without horizontal breakage
+ *   - native forms cannot leak keys when JavaScript is unavailable
+ *   - normal UI fetches still work under the production CSP
  *
  * Screenshots are written to $SCREENSHOT_DIR (default: OS temp dir), never into
  * the repository.
@@ -24,6 +26,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const assert = require("node:assert/strict");
 
 let chromium;
 try {
@@ -36,9 +39,11 @@ try {
 
 const WEB_ROOT = path.resolve(__dirname, "..");
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(os.tmpdir(), "opencode-provider-theme-shots");
-const CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; " +
-  "frame-ancestors 'self'; base-uri 'none'; form-action 'none'";
+// Use the production literal, never a silently stronger fixture policy.
+const managementSource = fs.readFileSync(path.join(WEB_ROOT, "../provider/management.go"), "utf8");
+const policies = [...managementSource.matchAll(/headers\.Set\("Content-Security-Policy", "([^"\r\n]+)"\)/g)];
+assert.equal(policies.length, 1, "expected one explicit production resource CSP");
+const CSP = policies[0][1];
 const CONTENT_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -52,8 +57,13 @@ const EXPECTED = {
   dark: { bg: "rgb(21, 20, 18)", attr: "dark" }
 };
 
-function startServer() {
+function startServer(requests) {
   const server = http.createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => { requests.push({ url: req.url, body }); });
+    req.resume();
     const url = new URL(req.url, "http://127.0.0.1");
     let pathname = decodeURIComponent(url.pathname);
     if (pathname === "/") {
@@ -135,12 +145,106 @@ async function waitForFrameBg(frame, expected) {
   );
 }
 
+async function checkNativeForms(browser, base, serverRequests, mode) {
+  const context = await browser.newContext({ javaScriptEnabled: mode !== "javascript-disabled" });
+  try {
+    const network = [];
+    const receivedStart = serverRequests.length;
+    context.on("request", (request) => {
+      network.push({ url: request.url(), body: request.postData() || "", document: request.isNavigationRequest() });
+    });
+    if (mode === "script-aborted") {
+      await context.route("**/ui.js", (route) => route.abort("failed"));
+    }
+    const url = base + "/ui.html";
+    const secrets = ["fake-" + mode + "-management-key", "fake-" + mode + "-opencode-key"];
+    for (const button of ["#refresh-btn", "#import-btn"]) {
+      // Separate documents avoid Chromium deduplicating identical CSP diagnostics.
+      const page = await context.newPage();
+      const scriptFailure = mode === "script-aborted"
+        ? page.waitForEvent("requestfailed", { predicate: (request) => request.url() === base + "/ui.js" })
+        : null;
+      const response = await page.goto(url);
+      assert.equal(response.headers()["content-security-policy"], CSP);
+      if (scriptFailure) {
+        await scriptFailure;
+        check(mode + ": " + button + " ui.js request failed", true);
+      }
+      await page.locator("#mgmt-key").fill(secrets[0]);
+      await page.locator("#keys").fill(secrets[1]);
+      // Chromium emits this diagnostic even with page JavaScript disabled.
+      const violation = page.waitForEvent("console", {
+        predicate: (message) => message.type() === "error" &&
+          /form-action 'none'/.test(message.text()) && /blocked/i.test(message.text())
+      });
+      // CSP cancels the scheduled navigation; wait for its diagnostic instead.
+      await page.locator(button).click({ noWaitAfter: true });
+      const message = await violation;
+      check(mode + ": " + button + " blocked by form-action", true, message.text());
+      check(mode + ": " + button + " leaves URL unchanged", page.url() === url, page.url());
+      await page.close();
+    }
+    // A server round trip drains observations after the confirmed CSP blocks.
+    await context.request.get(base + "/ui.css");
+    const received = serverRequests.slice(receivedStart);
+    const leaked = [...network, ...received].some((request) =>
+      secrets.some((secret) => request.url.includes(secret) || request.body.includes(secret)));
+    check(mode + ": no secret in network or server query/body", !leaked, JSON.stringify({ network, received }));
+    check(mode + ": no native form navigation request",
+      network.filter((request) => request.document).length === 2, JSON.stringify(network));
+  } finally {
+    await context.close();
+  }
+}
+
+async function checkFetch(browser, base) {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    const requests = [];
+    const managementKey = "fake-fetch-management-key";
+    const openCodeKey = "fake-fetch-opencode-key";
+    await page.route("**/v0/management/plugins/cliproxyapi-opencode-provider/keys", async (route) => {
+      const request = route.request();
+      requests.push(request);
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(request.method() === "GET"
+          ? { files: [] } : { imported: 1, skipped: 0, failed: 0 })
+      });
+    });
+    await page.goto(base + "/ui.html");
+    await page.locator("#mgmt-key").fill(managementKey);
+    await page.locator("#refresh-btn").click();
+    await page.waitForFunction(() => document.querySelector("#status").textContent.includes("列表为空"));
+    check("normal UI GET fetch succeeds under production CSP",
+      requests.length === 1 && requests[0].method() === "GET" &&
+      requests[0].headers().authorization === "Bearer " + managementKey &&
+      !requests[0].url().includes(managementKey));
+    await page.locator("#keys").fill(openCodeKey);
+    await page.locator("#import-btn").click();
+    await page.waitForFunction(() => document.querySelector("#status").textContent.includes("导入成功"));
+    check("normal UI POST fetch succeeds under production CSP",
+      requests.length === 2 && requests[1].method() === "POST" &&
+      requests[1].headers().authorization === "Bearer " + managementKey &&
+      requests[1].postDataJSON().keys[0] === openCodeKey &&
+      await page.locator("#keys").inputValue() === "" &&
+      page.url() === base + "/ui.html");
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
-  const { server, port } = await startServer();
+  const serverRequests = [];
+  const { server, port } = await startServer(serverRequests);
   const base = "http://127.0.0.1:" + port;
   const browser = await launchBrowser();
   try {
+    await checkNativeForms(browser, base, serverRequests, "javascript-disabled");
+    await checkNativeForms(browser, base, serverRequests, "script-aborted");
+    await checkFetch(browser, base);
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     await page.goto(base + "/browser/fixture.html");
@@ -247,6 +351,7 @@ async function main() {
   }
 
   const failed = results.filter((r) => !r.ok);
+  fs.writeFileSync(path.join(SCREENSHOT_DIR, "browser-results.json"), JSON.stringify({ csp: CSP, results }, null, 2) + "\n");
   console.log("\nscreenshots: " + SCREENSHOT_DIR);
   console.log(results.length - failed.length + "/" + results.length + " browser checks passed");
   if (failed.length) {

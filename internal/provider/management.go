@@ -85,7 +85,7 @@ func resourceResponse(name string) ([]byte, error) {
 	headers := http.Header{}
 	headers.Set("Content-Type", contentType)
 	// CPA embeds plugin pages in a same-origin iframe; other origins stay blocked.
-	headers.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'")
+	headers.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
 	headers.Set("X-Content-Type-Options", "nosniff")
 	headers.Set("Cache-Control", "no-store")
 	headers.Set("Referrer-Policy", "no-referrer")

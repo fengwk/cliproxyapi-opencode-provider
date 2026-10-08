@@ -273,8 +273,8 @@ func TestResourceRoutesServeAssets(t *testing.T) {
 	if !strings.Contains(string(resp.Body), "<html") {
 		t.Fatalf("ui.html not served: %s", resp.Body)
 	}
-	// Exact policies prevent accidentally allowing cross-origin embedding or scripts.
-	wantCSP := "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'"
+	// Exact policies also block native form submissions if the UI script cannot run.
+	wantCSP := "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
 	for _, resource := range []string{"/ui", "/ui.js", "/ui.css"} {
 		resp := callManagement(t, manager, http.MethodGet, authResourcePath+resource, nil)
 		if resp.StatusCode != http.StatusOK {

@@ -38,12 +38,21 @@ plugins:
       enabled: true
       # OpenCode Go upstream endpoint.
       base-url: "https://opencode.ai/zen/go/v1"
-      # Optional protocol route overrides. These do NOT add models: the published
-      # catalog comes only from the authenticated upstream GET <base-url>/models.
+      # Optional protocol route overrides. These do NOT register models: the
+      # published catalog comes from the authenticated upstream GET
+      # <base-url>/models plus any explicit manual-models below.
       # protocol is one of: openai, claude, openai-response.
       # models:
       #   - id: "custom-model"
       #     protocol: "openai"
+      # Explicitly registered models, published under the opencode-go/ prefix and
+      # usable even when upstream discovery fails. Known families may omit
+      # protocol; unknown families require it. At most 100 entries, each id at
+      # most 200 bytes; official catalog metadata wins for duplicate ids.
+      # manual-models:
+      #   - id: "glm-5.2"
+      #   - id: "novel-model"
+      #     protocol: "claude"
 
 # Native library location (see `make build` and the release archives):
 #   <plugins.dir>/<goos>/<goarch>/cliproxyapi-opencode-provider.so

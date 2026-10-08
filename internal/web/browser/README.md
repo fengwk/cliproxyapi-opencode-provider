@@ -1,7 +1,8 @@
-# Browser theme checks
+# Browser checks
 
-Manual browser validation for the plugin UI theme bridge (`ui.js` /
-`ui.css`). Playwright is intentionally **not** a repository dependency.
+Manual browser validation for the plugin UI (`ui.js` / `ui.css`): the theme
+bridge and the manual-model editor. Playwright is intentionally **not** a
+repository dependency.
 
 ```bash
 # from a scratch directory outside the repo
@@ -46,3 +47,33 @@ contract as a same-origin parent. Playwright resolves a local Chrome first
 (`channel: "chrome"`, or `CHROME_PATH`) and falls back to the bundled browser.
 Screenshots and `browser-results.json` (including the policy and CSP blocking
 evidence) are written to `$SCREENSHOT_DIR` and never into the repository.
+
+## Manual-model editor (`models.cjs`)
+
+`models.cjs` reuses the same throwaway loopback server, production CSP literal
+and Playwright dependency to drive section 5 of the plugin page against local
+route mocks (`/keys`, `/settings`, `/validate`, `/config`) with a fake
+management key — no CPA, no upstream, no network egress, no real credentials:
+
+```bash
+NODE_PATH="$(npm root)" CHROMIUM_PATH=/path/to/chromium \
+  node internal/web/browser/models.cjs /tmp/opencode-model-shots
+```
+
+It validates:
+
+- adding a native or `opencode-go/`-prefixed id and rejecting an unknown family
+  without an explicit protocol;
+- a failed `POST /validate` leaves the draft intact and issues no `PATCH
+  /config` write;
+- a successful save sends a shallow `manual-models`-only patch, tolerates a
+  bounded `503` during read-back, and preserves unrelated config (`enabled`,
+  `base-url`, `models`);
+- deleting all rows and saving persists an empty manual catalog and disables the
+  save button;
+- the 390px viewport has no page-level horizontal overflow and no browser
+  exceptions.
+
+`CHROMIUM_PATH` selects the browser (default `/usr/bin/chromium`).
+`models-results.json` and screenshots are written to the argument directory and
+never into the repository.

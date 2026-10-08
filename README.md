@@ -173,14 +173,17 @@ curl http://127.0.0.1:8317/v0/management/plugins/cliproxyapi-opencode-provider/q
 
 ## 模型路由与缓存
 
-模型目录**只**来自每个凭据的宿主发现：插件使用该凭据、经宿主 HTTP 回调请求一次
-`GET <base-url>/models`，把成功响应里的官方模型按其原始顺序、`created` 和
-`owned_by` 发布到 `opencode-go/` 命名空间。插件不内置、不嵌入任何静态模型清单，
-也不会在配置改动或发现失败时回退到固定列表或上一次结果。
+模型目录来自两处合并：每个凭据的宿主发现，以及显式配置的 `manual-models`。插件
+使用该凭据、经宿主 HTTP 回调请求一次 `GET <base-url>/models`，把成功响应里的官方
+模型按其原始顺序、`created` 和 `owned_by` 发布到 `opencode-go/` 命名空间；
+`manual-models` 只追加官方响应中不存在的 native id。插件不内置、不嵌入任何静态模型
+清单，也**不会**回退到固定列表或上一次结果。
 
-发现失败（缺少密钥、回调失败、上游非 2xx、响应格式非法）会以脱敏的失败 envelope
-返回，**不会**被当作“空目录成功”。只有当上游返回合法的空 `data: []` 时才是真正的
-空目录。
+发现失败（缺少密钥、回调失败、上游非 2xx、响应格式非法）时，若未配置
+`manual-models`，仍以脱敏的失败 envelope 返回，**不会**被当作“空目录成功”；只有
+上游返回合法的空 `data: []` 时才是真正的空目录。若已配置 `manual-models`，失败或
+空目录都会回退为仅发布这些显式模型。两条路径都必须先解析出有效凭据，手动注册
+不绕过认证。
 
 模型发现参与 CPA 的注册与路由，而不只是界面展示；CPA 的 `GET /v1/models` 读取其
 注册表，不会为每次推理重新发现。插件只在宿主触发发现时调用一次 `/models`，
@@ -200,8 +203,8 @@ native id，因此上游永远看不到 `opencode-go/` 前缀。
 | `gpt`, `grok`, `muse-spark` | OpenAI Responses |
 | `glm`, `kimi`, `deepseek`, `longcat`, `mimo`, `hy`, `space-bunny` | OpenAI Chat Completions |
 
-`models` 配置**只**用于指定或覆盖上述协议路由，**不会**把未出现在官方响应中的模型
-加入发布目录：
+`models` 配置**只**用于指定或覆盖上述协议路由，**不会**把未出现在官方响应或
+`manual-models` 中的模型加入发布目录：
 
 ```yaml
 plugins:
@@ -210,6 +213,23 @@ plugins:
       models:
         - id: "custom-model"
           protocol: "openai" # openai | claude | openai-response
+```
+
+`manual-models` 用于显式注册模型 ID：官方目录之外都会以 `opencode-go/` 前缀发布，
+即使 `/models` 失败也可用。填原始 ID 或 `opencode-go/` 全名（归一化时剥离一次前缀），
+已知模型族可省略 `protocol`，未知族必须显式指定；最多 100 条、每条 ID 不超过 200
+UTF-8 字节。官方目录已有的 ID 保留其 `created`/`owned_by` 元数据。手动注册只影响
+CPA 目录与路由，不保证上游实际支持或额度充足。插件页的「手动模型」可编辑草稿、
+校验（`POST /validate`）后保存（浅 PATCH 配置并回读确认），清空并保存可取消全部手动注册：
+
+```yaml
+plugins:
+  configs:
+    cliproxyapi-opencode-provider:
+      manual-models:
+        - id: "glm-5.2"           # 已知族，自动选择协议
+        - id: "novel-model"
+          protocol: "claude"      # openai | claude | openai-response
 ```
 
 CPA 的逻辑会话 `S` 保持不变；插件在选定凭据后计算上游会话：
@@ -248,6 +268,7 @@ make package                          # 需要 zip，输出 dist/pkg/
 - 多 key 429 故障转移、会话粘性、无显式信号的 CPA 会话回退。
 - 管理 API 认证、资源安全头、密钥导入/列表/删除与重启持久化。
 - 原生配额发现、凭据索引、三窗口映射、多 key 查询隔离、错误脱敏与只读重置拒绝。
+- 真实宿主上发现失败时显式 `manual-models` 的认证校验、浅配置补丁、目录注册与撤销。
 - SSE 分片和截断，禁止虚假的成功结束。
 
 维护流程：
@@ -307,7 +328,17 @@ NODE_PATH="$(npm root)" SCREENSHOT_DIR=/tmp/opencode-theme-shots \
   node internal/web/browser/theme-check.cjs
 ```
 
-`make test` 另行运行 `node --test internal/web/ui.test.cjs`，其中已覆盖主题桥接的纯函数与内嵌/回退逻辑。
+同目录的 `models.cjs` 复用同一临时 Playwright 依赖、本地路由 mock、假凭据与生产 CSP，
+覆盖手动模型编辑器：校验失败不发写入、浅保存保留其它配置、有界回读确认、删除并以空
+列表撤销注册、390px 布局；不连接真实 CPA 或上游：
+
+```bash
+CHROMIUM_PATH=/path/to/chromium NODE_PATH="$(npm root)" \
+  node internal/web/browser/models.cjs /tmp/opencode-model-shots
+```
+
+`make test` 另行运行 `node --test internal/web/ui.test.cjs`，其中已覆盖主题桥接的纯函数、
+内嵌/回退逻辑，以及手动模型的归一化规则与端点前缀。
 
 ## 安全与许可证
 

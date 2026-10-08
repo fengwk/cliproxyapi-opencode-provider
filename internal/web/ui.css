@@ -530,3 +530,19 @@ a:hover {
     transition: none;
   }
 }
+.model-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.model-fields .field { flex: 1 1 240px; min-width: 0; }
+.model-fields input, .model-fields select { width: 100%; min-width: 0; }
+.model-fields select {
+  padding: 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}

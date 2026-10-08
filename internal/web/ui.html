@@ -106,6 +106,40 @@
     </div>
   </section>
 
+  <section class="card" aria-labelledby="models-heading">
+    <h2 id="models-heading">5. 手动模型</h2>
+    <p class="hint">手动模型会与上游目录合并；即使 <code>/models</code> 拉取失败，也可注册这些 ID。填原始 ID 或 <code>opencode-go/</code> 全名，已知模型族可自动选择协议，未知族必须指定协议。手动注册不保证上游实际支持或额度充足。</p>
+    <div class="model-fields">
+      <div class="field">
+        <label for="manual-model-id">模型 ID</label>
+        <input id="manual-model-id" type="text" autocomplete="off" spellcheck="false" placeholder="glm-5.2">
+      </div>
+      <div class="field">
+        <label for="manual-model-protocol">上游协议</label>
+        <select id="manual-model-protocol">
+          <option value="">自动（已知模型族）</option>
+          <option value="openai">OpenAI Chat Completions</option>
+          <option value="claude">Anthropic Messages</option>
+          <option value="openai-response">OpenAI Responses</option>
+        </select>
+      </div>
+      <button id="manual-model-add" type="button">添加到草稿</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <caption class="visually-hidden">手动注册模型草稿</caption>
+        <thead><tr><th scope="col">原始模型 ID</th><th scope="col">上游协议</th><th scope="col">操作</th></tr></thead>
+        <tbody id="manual-model-body"><tr><td colspan="3" class="empty-cell">连接后加载。</td></tr></tbody>
+      </table>
+    </div>
+    <p class="hint">最多 100 个唯一 ID，每个不超过 200 UTF-8 字节。删除只修改草稿；点击保存才写入 CPA 配置。清空并保存可取消全部手动注册。不会覆盖基础地址或旧协议覆盖配置。</p>
+    <div class="actions">
+      <button id="manual-model-save" type="button" disabled>保存手动模型</button>
+      <button id="manual-model-reload" type="button">重新加载 / 放弃草稿</button>
+    </div>
+    <p id="manual-model-status" class="status info" role="status" aria-live="polite">连接后加载，或输入管理密钥再点击重新加载。</p>
+  </section>
+
   <section class="card" aria-labelledby="about-heading">
     <h2 id="about-heading">运行说明</h2>
     <ul class="notes">

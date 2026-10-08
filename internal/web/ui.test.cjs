@@ -749,14 +749,16 @@ async function mountQuotaUi(files, quotaResponse, locationOverride) {
   const requests = [];
   const fetchImpl = async (url, init) => {
     requests.push({ url, init });
-    const scripted = url.indexOf("/quota") >= 0 ? quotaResponse : { status: 200, body: { files } };
+    const scripted = url.indexOf("/quota") >= 0 ? quotaResponse :
+      { status: 200, body: url.endsWith("/settings") ? { "manual-models": [] } : { files } };
     if (!scripted) {
       throw new Error("unexpected fetch");
     }
     return {
       status: scripted.status,
       ok: scripted.status >= 200 && scripted.status < 300,
-      text: async () => JSON.stringify(scripted.body)
+      text: async () => JSON.stringify(scripted.body),
+      json: async () => scripted.body
     };
   };
   vm.runInNewContext(readAsset("ui.js"), {
@@ -766,8 +768,11 @@ async function mountQuotaUi(files, quotaResponse, locationOverride) {
         protocol: "http:", hostname: "127.0.0.1",
         pathname: "/v0/resource/plugins/cliproxyapi-opencode-provider/ui"
       },
-      confirm: () => true
+      confirm: () => true,
+      setTimeout,
+      clearTimeout
     },
+    AbortController,
     TextEncoder,
     fetch: fetchImpl
   });
@@ -800,9 +805,9 @@ test("quota button posts the selected auth index to the native read-only endpoin
   buttons[0].handlers.click({ currentTarget: buttons[0] });
   await settle();
 
-  // Exactly the list GET plus one quota POST: no polling or automatic retry.
-  assert.equal(requests.length, 2);
-  const quotaRequest = requests[1];
+  // List/settings GETs plus one quota POST: no polling or automatic retry.
+  assert.equal(requests.length, 3);
+  const quotaRequest = requests[2];
   assert.equal(quotaRequest.url, "/v0/management/plugins/cliproxyapi-opencode-provider/quota");
   assert.equal(quotaRequest.init.method, "POST");
   assert.deepEqual(JSON.parse(quotaRequest.init.body), { auth_index: "idx-1" });
@@ -832,7 +837,7 @@ test("quota button posts the selected auth index to the native read-only endpoin
   await settle();
   assert.equal(get("quota-panel").hidden, true);
   assert.match(get("quota-status").textContent, /尚未选择/);
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 5);
 });
 
 test("malformed quota response shows a fixed error and never a guessed value", async () => {
@@ -850,7 +855,7 @@ test("malformed quota response shows a fixed error and never a guessed value", a
   assert.match(get("quota-status").textContent, /配额数据不可用/);
   assert.equal(get("quota-status").textContent.includes("img"), false);
   assert.equal(get("quota-status").textContent.includes("alert"), false);
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 3);
 });
 
 test("quota auth failure disconnects and clears the key and old quota", async () => {
@@ -867,7 +872,7 @@ test("quota auth failure disconnects and clears the key and old quota", async ()
     assert.equal(get("quota-panel").hidden, true);
     assert.equal(get("quota-status").textContent.includes(String(status)), true);
     assert.equal(get("quota-status").textContent.includes("leaked-secret"), false);
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 3);
   }
 });
 
@@ -897,7 +902,7 @@ test("a row without a safe auth index cannot query quota", async () => {
   assert.equal(buttons.length, 2);
   assert.equal(buttons[0].disabled, true);
   assert.equal(buttons[1].disabled, true);
-  assert.equal(requests.length, 1, "no quota request without a safe index");
+  assert.equal(requests.length, 2, "only list/settings; no quota request without a safe index");
 });
 
 test("plaintext HTTP off loopback keeps quota disabled and sends nothing", async () => {
@@ -1063,4 +1068,28 @@ test("initTheme falls back to the system scheme for a cross-origin or absent par
   assert.equal(bootThemeUi({ crossOrigin: true, systemDark: false }).getAttribute("data-theme"), "white");
   assert.equal(bootThemeUi({ hostPresent: false, systemDark: true }).getAttribute("data-theme"), "dark");
   assert.equal(bootThemeUi({ hostPresent: false, systemDark: false }).getAttribute("data-theme"), "white");
+});
+// Native and namespaced IDs share validation and preserve explicit protocol choices.
+test("manual models normalize namespace, auto protocol and explicit overrides", () => {
+  assert.deepEqual(ui.normalizeManualModels([
+    { id: " opencode-go/glm-5.2 " }, { id: "novel", protocol: "claude" }
+  ]), [{ id: "glm-5.2" }, { id: "novel", protocol: "claude" }]);
+  assert.deepEqual(ui.normalizeManualModels([]), []);
+});
+
+test("manual models reject duplicate ids, unknown auto protocols and invalid input", () => {
+  for (const models of [
+    null, [{ id: "glm x" }], [{ id: "novel" }], [{ id: "glm\u0085x" }],
+    [{ id: "glm-x" }, { id: "opencode-go/glm-x" }],
+    [{ id: "opencode-go/opencode-go/glm-x" }],
+    [{ id: "novel", protocol: "bad" }], [{ id: "g".repeat(201), protocol: "openai" }],
+    Array.from({ length: 101 }, (_, i) => ({ id: "glm-" + i }))
+  ]) assert.throws(() => ui.normalizeManualModels(models));
+});
+
+test("manual model management endpoints preserve the proxy prefix", () => {
+  const urls = ui.deriveEndpoints({ pathname: "/proxy/v0/resource/plugins/" + ui.PLUGIN_ID + "/ui" });
+  for (const field of ["settings", "validate", "config"]) {
+    assert.equal(urls[field + "Url"], "/proxy/v0/management/plugins/" + ui.PLUGIN_ID + "/" + field);
+  }
 });

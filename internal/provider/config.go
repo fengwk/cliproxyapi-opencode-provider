@@ -28,15 +28,17 @@ type Config struct {
 	BaseURL string
 	// Routes maps a native model id to a deterministic upstream protocol. These
 	// are protocol overrides only: they never add model ids to the published
-	// catalog, which comes solely from the upstream GET /models response.
-	Routes map[string]translator.Format
+	// catalog. Explicit manual models are registered separately.
+	Routes       map[string]translator.Format
+	ManualModels []ManualModel
 }
 
 // rawConfig mirrors the flattened plugin config YAML. Unknown keys (including
 // host-owned enabled/priority) are ignored.
 type rawConfig struct {
-	BaseURL string     `yaml:"base-url"`
-	Models  []rawModel `yaml:"models"`
+	BaseURL      string        `yaml:"base-url"`
+	Models       []rawModel    `yaml:"models"`
+	ManualModels []ManualModel `yaml:"manual-models"`
 }
 
 type rawModel struct {
@@ -44,10 +46,16 @@ type rawModel struct {
 	Protocol string `yaml:"protocol"`
 }
 
+// ManualModel explicitly publishes a native ID, with optional protocol selection.
+type ManualModel struct {
+	ID       string `yaml:"id" json:"id"`
+	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
+}
+
 // parseConfig decodes and validates the lifecycle config payload. An empty
 // payload yields the defaults.
 func parseConfig(configYAML []byte) (Config, error) {
-	cfg := Config{BaseURL: DefaultBaseURL, Routes: map[string]translator.Format{}}
+	cfg := Config{BaseURL: DefaultBaseURL, Routes: map[string]translator.Format{}, ManualModels: []ManualModel{}}
 	trimmed := strings.TrimSpace(string(configYAML))
 	if trimmed == "" || trimmed == "null" || trimmed == "{}" {
 		return cfg, nil
@@ -77,7 +85,45 @@ func parseConfig(configYAML []byte) (Config, error) {
 		}
 		cfg.Routes[id] = format
 	}
+	models, err := normalizeManualModels(raw.ManualModels)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ManualModels = models
+	for _, model := range models {
+		if model.Protocol != "" {
+			format, _ := parseProtocol(model.Protocol)
+			cfg.Routes[model.ID] = format
+		}
+	}
 	return cfg, nil
+}
+
+func normalizeManualModels(raw []ManualModel) ([]ManualModel, error) {
+	if len(raw) > 100 {
+		return nil, fmt.Errorf("manual-models accepts at most 100 entries")
+	}
+	models := make([]ManualModel, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, item := range raw {
+		id := nativeModelID(item.ID)
+		if id == "" || len(id) > 200 || strings.HasPrefix(id, modelPrefix) || strings.IndexFunc(id, invalidNativeRune) >= 0 || seen[id] {
+			return nil, fmt.Errorf("manual-models requires unique valid model ids of at most 200 bytes")
+		}
+		seen[id] = true
+		protocol := strings.TrimSpace(item.Protocol)
+		if protocol != "" {
+			format, err := parseProtocol(protocol)
+			if err != nil {
+				return nil, fmt.Errorf("manual-models protocol must be openai, claude or openai-response")
+			}
+			protocol = string(format)
+		} else if _, ok := routeNativeModel(Config{}, id); !ok {
+			return nil, fmt.Errorf("manual-models unknown model family requires an explicit protocol")
+		}
+		models = append(models, ManualModel{ID: id, Protocol: protocol})
+	}
+	return models, nil
 }
 
 // parseProtocol maps a configured protocol name to a translator format.

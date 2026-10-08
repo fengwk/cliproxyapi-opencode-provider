@@ -42,7 +42,12 @@ func Metadata() pluginapi.Metadata {
 			{
 				Name:        "models",
 				Type:        pluginapi.ConfigFieldTypeArray,
-				Description: "Optional deterministic protocol route overrides: [{id, protocol: openai|claude|openai-response}]. Overrides never add models; the published catalog comes only from the upstream /models response.",
+				Description: "Optional deterministic protocol route overrides: [{id, protocol: openai|claude|openai-response}]. Overrides never add models.",
+			},
+			{
+				Name:        "manual-models",
+				Type:        pluginapi.ConfigFieldTypeArray,
+				Description: "Explicit model registration: [{id, protocol?}]. Added to discovered models and usable even when discovery fails. Unknown families require a protocol.",
 			},
 		},
 	}

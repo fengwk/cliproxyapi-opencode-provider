@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"unicode"
@@ -15,7 +17,9 @@ import (
 )
 
 const (
-	keysRoute = "/plugins/" + PluginID + "/keys"
+	keysRoute     = "/plugins/" + PluginID + "/keys"
+	settingsRoute = "/plugins/" + PluginID + "/settings"
+	validateRoute = "/plugins/" + PluginID + "/validate"
 
 	maxImportKeys    = 100
 	maxImportBody    = 64 << 10
@@ -36,6 +40,8 @@ func managementRegistration() managementRegistrationResponse {
 		Routes: []pluginapi.ManagementRoute{
 			{Method: http.MethodGet, Path: keysRoute, Description: "List OpenCode Go credentials."},
 			{Method: http.MethodPost, Path: keysRoute, Description: "Import OpenCode Go API keys."},
+			{Method: http.MethodGet, Path: settingsRoute, Description: "Effective manually registered models."},
+			{Method: http.MethodPost, Path: validateRoute, Description: "Validate a manual model configuration patch."},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{Path: "/ui", Menu: PluginName, Description: PluginName + " key management for the OpenCode Go upstream."},
@@ -66,6 +72,10 @@ func (m *Manager) handleManagement(request []byte) ([]byte, error) {
 		return m.listKeys()
 	case req.Method == http.MethodPost && path == managementPath+keysRoute:
 		return m.importKeys(req.Body)
+	case req.Method == http.MethodGet && path == managementPath+settingsRoute:
+		return managementJSON(http.StatusOK, map[string]any{"manual-models": m.config().ManualModels})
+	case req.Method == http.MethodPost && path == managementPath+validateRoute:
+		return validateManualPatch(req.Body)
 	case req.Method == http.MethodGet && path == authResourcePath+"/ui":
 		return resourceResponse("ui.html")
 	case req.Method == http.MethodGet && path == authResourcePath+"/ui.js":
@@ -104,6 +114,44 @@ func managementJSON(status int, payload any) ([]byte, error) {
 		return managementRaw(http.StatusInternalServerError, "text/plain; charset=utf-8", []byte("internal error"))
 	}
 	return managementRaw(status, "application/json; charset=utf-8", body)
+}
+
+func validateManualPatch(body []byte) ([]byte, error) {
+	invalid := func() ([]byte, error) {
+		return managementJSON(http.StatusBadRequest, map[string]string{"error": "invalid manual-models patch"})
+	}
+	if len(body) > maxImportBody {
+		return managementJSON(http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+	}
+	// Exactly one root field, no duplicates, no trailing payload.
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
+		return invalid()
+	}
+	if token, err := dec.Token(); err != nil || token != "manual-models" {
+		return invalid()
+	}
+	var raw json.RawMessage
+	if err := dec.Decode(&raw); err != nil || !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("[")) {
+		return invalid()
+	}
+	if token, err := dec.Token(); err != nil || token != json.Delim('}') {
+		return invalid()
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return invalid()
+	}
+	var models []ManualModel
+	modelDec := json.NewDecoder(bytes.NewReader(raw))
+	modelDec.DisallowUnknownFields()
+	if err := modelDec.Decode(&models); err != nil {
+		return invalid()
+	}
+	if _, err := normalizeManualModels(models); err != nil {
+		return invalid()
+	}
+	return managementJSON(http.StatusOK, map[string]bool{"valid": true})
 }
 
 // keyFileEntry is one sanitized credential summary returned by the list route.

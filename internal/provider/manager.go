@@ -366,10 +366,12 @@ func (m *Manager) handleModelsForAuth(request []byte) ([]byte, error) {
 			HTTPStatus: http.StatusUnauthorized,
 		}))
 	}
-	models, errDiscover := m.discoverModels(m.config(), key, req.HostCallbackID)
-	if errDiscover != nil {
+	cfg := m.config()
+	models, errDiscover := m.discoverModels(cfg, key, req.HostCallbackID)
+	if errDiscover != nil && len(cfg.ManualModels) == 0 {
 		return mustEnvelope(resultError(errDiscover))
 	}
+	models = addManualModels(models, cfg.ManualModels)
 	return okEnvelope(pluginapi.ModelResponse{Provider: ProviderID, Models: models})
 }
 

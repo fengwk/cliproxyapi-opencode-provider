@@ -131,8 +131,8 @@ func decodeCatalog(body []byte) ([]pluginapi.ModelInfo, error) {
 
 // discoverModels performs exactly one authenticated GET <base>/models through
 // the host HTTP callback and returns the official catalog. There is no static
-// snapshot, no last-good cache and no fallback: a missing credential is reported
-// by the caller, and every transport, status or payload failure is surfaced.
+// snapshot or last-good cache. The caller may publish explicitly configured
+// manual models when discovery fails, but never bypasses credential resolution.
 func (m *Manager) discoverModels(cfg Config, key, callbackID string) ([]pluginapi.ModelInfo, error) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+key)
@@ -146,4 +146,22 @@ func (m *Manager) discoverModels(cfg Config, key, callbackID string) ([]pluginap
 		return nil, upstreamError(resp.StatusCode)
 	}
 	return decodeCatalog(resp.Body)
+}
+
+func addManualModels(models []pluginapi.ModelInfo, manual []ManualModel) []pluginapi.ModelInfo {
+	seen := make(map[string]bool, len(models))
+	for _, model := range models {
+		seen[model.ID] = true
+	}
+	for _, model := range manual {
+		id := modelPrefix + model.ID
+		if seen[id] {
+			continue
+		}
+		info := modelInfo(model.ID, 0, "opencode")
+		info.UserDefined = true
+		models = append(models, info)
+		seen[id] = true
+	}
+	return models
 }

@@ -71,8 +71,14 @@ It validates:
   `base-url`, `models`);
 - deleting all rows and saving persists an empty manual catalog and disables the
   save button;
-- the 390px viewport has no page-level horizontal overflow and no browser
-  exceptions.
+- an empty catalog renders one spanning placeholder row;
+- the reported `step-5-preview-free` / `openai` row (plus a long wrapping id)
+  centers its text on a compact `>= 24px` delete button, and the add button
+  shares the input/select bottom edge;
+- the manual editor renders light / white / dark close-ups at 1280px;
+- the 390px viewport keeps the wide draft table scrolling inside its wrapper
+  (table-internal scroll) without page-level horizontal overflow, and no browser
+  exception is raised.
 
 `CHROMIUM_PATH` selects the browser (default `/usr/bin/chromium`).
 `models-results.json` and screenshots are written to the argument directory and

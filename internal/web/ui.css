@@ -535,14 +535,33 @@ a:hover {
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 12px;
+  /* Own the outer spacing so the .field margins (removed below) do not offset
+   * the add button against the control row. */
+  margin: 0.75rem 0;
 }
 
-.model-fields .field { flex: 1 1 240px; min-width: 0; }
+.model-fields .field { flex: 1 1 240px; min-width: 0; margin: 0; }
 .model-fields input, .model-fields select { width: 100%; min-width: 0; }
 .model-fields select {
-  padding: 10px;
+  /* Match the input/button: selects do not inherit font by default. */
+  font: inherit;
+  line-height: 1.5;
+  padding: 0.625rem 0.75rem;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   background: var(--bg-secondary);
+}
+
+/* The manual-model draft table: center each row's text against the compact row
+ * delete button instead of the global top alignment used by the data tables. */
+.manual-model-table td {
+  vertical-align: middle;
+}
+
+.manual-model-table td button {
+  white-space: nowrap;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8125rem;
+  line-height: 1.2;
 }

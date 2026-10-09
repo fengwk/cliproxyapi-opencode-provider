@@ -299,6 +299,38 @@ test("ui.html shows the plugin display name and keeps the technical ID", () => {
   assert.ok(html.includes("导入 OpenCode Go 密钥"));
 });
 
+// The manual-model alignment fix is CSS-only and stays scoped: the credential
+// and quota tables keep the global top alignment, the draft table centers each
+// row on a compact delete button, and the control row shares one bottom edge.
+test("manual-model alignment rules stay scoped to the draft table and control row", () => {
+  const css = readAsset("ui.css");
+  const html = readAsset("ui.html");
+  // Read a rule body anchored at a line start so a lookalike selector (e.g.
+  // ".model-fields input, .model-fields select") never satisfies another rule.
+  const rule = (selector) => {
+    const pattern = new RegExp(
+      "(?:^|\\n)[ \\t]*" + selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{([^}]*)\\}"
+    );
+    const match = css.match(pattern);
+    assert.ok(match, "missing CSS rule: " + selector);
+    return match[1];
+  };
+  // Only the manual draft table opts into the scoped treatment.
+  assert.match(html, /<table class="manual-model-table">/);
+  // Other tables (credentials, quota) keep the global top alignment.
+  assert.match(rule("th,\ntd"), /vertical-align:\s*top/);
+  assert.match(rule(".manual-model-table td"), /vertical-align:\s*middle/);
+  const button = rule(".manual-model-table td button");
+  assert.match(button, /white-space:\s*nowrap/);
+  assert.match(button, /font-size:\s*0\.8125rem/);
+  assert.match(button, /line-height:\s*1\.2/);
+  // The flex control row owns the outer spacing; its fields add none, and the
+  // select inherits the input font so all three controls share a bottom edge.
+  assert.match(rule(".model-fields .field"), /margin:\s*0/);
+  assert.match(rule(".model-fields"), /margin:\s*0\.75rem 0/);
+  assert.match(rule(".model-fields select"), /font:\s*inherit/);
+});
+
 // Run the actual form handler, not only the exported pure helpers.
 async function submitImport(response, networkFailure = false) {
   const elements = new Map();

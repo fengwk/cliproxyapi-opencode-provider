@@ -8,11 +8,15 @@ const { chromium } = require('playwright');
 const web = path.resolve(__dirname, '..');
 const plugin = 'cliproxyapi-opencode-provider';
 
-// The manual-model draft table derives its design from the step-5-preview-free
-// row: text must be vertically centered on a compact row delete button, and the
-// add button must share the input/select bottom edge.
+// Draft rows used to exercise the manual-model geometry and wrapping.
 const MANUAL_ID = 'step-5-preview-free';
 const LONG_ID = 'opencode-go/' + 'wrapped-model-identifier-'.repeat(5) + 'end';
+
+// Shared token contract: computed body background per theme.
+const THEME_BG = { light: 'rgb(250, 249, 245)', white: 'rgb(255, 255, 255)', dark: 'rgb(21, 20, 18)' };
+// Shared button contract (BUTTONS.md): normal controls are 46px, .btn-sm is 39px.
+const BUTTON_HEIGHT = { normal: 46, small: 39 };
+const SEMANTICS = ['btn-primary', 'btn-secondary', 'btn-danger', 'btn-ghost'];
 
 async function readManualGeometry(page) {
   return page.evaluate(() => {
@@ -32,12 +36,17 @@ async function readManualGeometry(page) {
       const rect = range.getBoundingClientRect();
       return round(rect.top + rect.height / 2);
     };
+    const lineCount = (el) => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return range.getClientRects().length;
+    };
     const rows = Array.from(document.querySelectorAll('#manual-model-body tr')).map((row) => {
       const cells = Array.from(row.children);
       const button = row.querySelector('button');
       return {
         id: cells[0] ? cells[0].textContent : '',
-        cellHeight: cells[0] ? box(cells[0]).height : 0,
+        idLines: cells[0] ? lineCount(cells[0]) : 0,
         idTextCenter: cells[0] ? textCenter(cells[0]) : 0,
         protocolTextCenter: cells[1] ? textCenter(cells[1]) : 0,
         button: button ? box(button) : null
@@ -57,16 +66,16 @@ async function readManualGeometry(page) {
   });
 }
 
-// A row's id/protocol text must be centered on its own delete button, and the
-// button must stay compact while keeping a tappable target of at least 24px.
+// A row's id/protocol text must be centered on its own (shared-small) delete
+// button, whose single-line label keeps the target compact.
 function assertRowCentered(label, row) {
   assert.ok(row.button, label + ': expected a row delete button');
   assert.ok(Math.abs(row.idTextCenter - row.button.center) <= 1,
     label + ': id text center ' + row.idTextCenter + ' vs delete center ' + row.button.center);
   assert.ok(Math.abs(row.protocolTextCenter - row.button.center) <= 1,
     label + ': protocol text center ' + row.protocolTextCenter + ' vs delete center ' + row.button.center);
-  assert.ok(row.button.height >= 24 && row.button.height <= 32,
-    label + ': delete button height ' + row.button.height + ' outside the compact 24-32px range');
+  assert.ok(Math.abs(row.button.height - BUTTON_HEIGHT.small) <= 1,
+    label + ': delete button height ' + row.button.height + ' != shared small ' + BUTTON_HEIGHT.small);
 }
 
 // The manual select must inherit the input font, and all three controls must
@@ -82,6 +91,62 @@ function assertControlAlignment(label, geometry) {
     label + ': add button bottom ' + geometry.addButton.bottom + ' vs select bottom ' + geometry.select.bottom);
 }
 
+async function readButtons(page) {
+  return page.evaluate(() => {
+    const round = (value) => Math.round(value * 100) / 100;
+    return Array.from(document.querySelectorAll('button')).map((button) => {
+      const style = getComputedStyle(button);
+      return {
+        id: button.id || '',
+        label: button.textContent,
+        action: button.getAttribute('data-action') || '',
+        inDraft: Boolean(button.closest('#manual-model-body')),
+        classes: Array.from(button.classList),
+        height: round(button.getBoundingClientRect().height),
+        fontSize: style.fontSize,
+        fontWeight: style.fontWeight,
+        borderRadius: style.borderRadius,
+        whiteSpace: style.whiteSpace,
+        color: style.color,
+        background: style.backgroundColor,
+        disabled: button.disabled,
+        opacity: style.opacity,
+        cursor: style.cursor
+      };
+    });
+  });
+}
+
+// Every live button carries .btn with exactly one semantic variant; the shared
+// size classes dictate the rendered dimensions.
+function assertButtonContract(label, buttons) {
+  assert.ok(buttons.length >= 9, label + ': expected every live button, got ' + buttons.length);
+  for (const button of buttons) {
+    const where = label + ': ' + (button.id || button.action || button.label);
+    assert.ok(button.classes.includes('btn'), where + ' must carry .btn');
+    assert.equal(SEMANTICS.filter((variant) => button.classes.includes(variant)).length, 1,
+      where + ' must have exactly one semantic variant');
+    const small = button.classes.includes('btn-sm');
+    const want = small ? BUTTON_HEIGHT.small : BUTTON_HEIGHT.normal;
+    assert.ok(Math.abs(button.height - want) <= 1, where + ' height ' + button.height + ' != ' + want);
+    assert.equal(button.fontSize, small ? '14px' : '16px', where + ' font-size');
+    assert.equal(button.fontWeight, '600', where + ' font-weight');
+    assert.equal(button.borderRadius, '8px', where + ' radius');
+    assert.equal(button.whiteSpace, 'nowrap', where + ' white-space');
+    if (button.classes.includes('btn-primary')) {
+      assert.equal(button.background, 'rgb(139, 134, 128)', where + ' primary background');
+      assert.equal(button.color, 'rgb(255, 255, 255)', where + ' primary text');
+    }
+    if (button.classes.includes('btn-danger')) {
+      assert.equal(button.background, 'rgb(198, 87, 70)', where + ' danger background');
+      assert.equal(button.color, 'rgb(255, 255, 255)', where + ' danger text');
+    }
+    if (button.classes.includes('btn-secondary')) {
+      assert.equal(button.background, 'rgb(246, 246, 246)', where + ' secondary background');
+    }
+  }
+}
+
 async function addManualRow(page, id, protocol) {
   await page.locator('#manual-model-id').fill(id);
   await page.locator('#manual-model-protocol').selectOption(protocol);
@@ -94,6 +159,16 @@ async function setPageTheme(page, theme) {
     if (value === 'light') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', value);
   }, theme);
+  // Wait out the body color transition so screenshots never capture a blend.
+  await page.waitForFunction(
+    (want) => getComputedStyle(document.body).backgroundColor === want,
+    THEME_BG[theme], { timeout: 5000 }
+  );
+}
+
+async function screenshotStable(target, file) {
+  // animations: 'disabled' fast-forwards finite transitions to completion.
+  await target.screenshot({ path: file, animations: 'disabled' });
 }
 
 async function main() {
@@ -112,7 +187,11 @@ async function main() {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', headless: true });
   const results = [];
   const errors = [];
+  const evidence = {};
   const config = { enabled: true, 'base-url': 'https://example.invalid/v1', models: [{ id: 'old', protocol: 'openai' }], 'manual-models': [] };
+  // One managed credential renders the quota (secondary small) and delete
+  // (danger small) actions alongside the manual draft rows.
+  const files = [{ name: 'opencode-go-1.json', label: 'batch', status: 'active', disabled: false, success: 4, failed: 1, auth_index: '0' }];
   let failValidation = false;
   let temporary503 = 0;
   let writes = 0;
@@ -128,7 +207,7 @@ async function main() {
       assert.ok(pathname.startsWith('/proxy/v0/management/plugins/' + plugin + '/'));
       let payload = {};
       let status = 200;
-      if (pathname.endsWith('/keys')) payload = { files: [] };
+      if (pathname.endsWith('/keys')) payload = { files };
       if (pathname.endsWith('/settings')) {
         payload = { 'manual-models': config['manual-models'] };
         if (temporary503 > 0) { temporary503--; status = 503; }
@@ -150,6 +229,19 @@ async function main() {
     await page.locator('#mgmt-key').fill(secret);
     await page.locator('#refresh-btn').click();
     await page.waitForFunction(() => document.getElementById('manual-model-status').textContent.includes('已加载'));
+
+    // The save button starts disabled and must show the shared disabled state.
+    const disabledSave = await page.evaluate(() => {
+      const button = document.getElementById('manual-model-save');
+      const style = getComputedStyle(button);
+      return { disabled: button.disabled, opacity: style.opacity, cursor: style.cursor, classes: Array.from(button.classList) };
+    });
+    assert.equal(disabledSave.disabled, true);
+    assert.equal(disabledSave.opacity, '0.6');
+    assert.equal(disabledSave.cursor, 'not-allowed');
+    assert.ok(disabledSave.classes.includes('btn') && disabledSave.classes.includes('btn-primary'));
+    results.push('disabled buttons keep the shared .btn disabled treatment');
+
     await page.locator('#manual-model-id').fill('novel');
     await page.locator('#manual-model-add').click();
     assert.match(await page.locator('#manual-model-status').textContent(), /未知模型族/);
@@ -189,11 +281,12 @@ async function main() {
     assert.equal(await page.locator('#manual-model-body td').getAttribute('colspan'), '3');
     results.push('empty draft renders a single spanning placeholder row');
 
-    // Geometry: reproduce the reported step-5-preview-free/openai row, then a
-    // long wrapping id, and verify the control row and every draft row align.
+    // Geometry: an explicit-protocol row plus a long wrapping id verify the
+    // control row and every draft row align.
     await addManualRow(page, MANUAL_ID, 'openai');
     await addManualRow(page, LONG_ID, 'claude');
     const geometry = await readManualGeometry(page);
+    evidence.geometry = geometry;
     assert.equal(geometry.rows.length, 2);
     assertControlAlignment('desktop control row', geometry);
     const shortRow = geometry.rows.find((row) => row.id === MANUAL_ID);
@@ -201,17 +294,79 @@ async function main() {
     assert.ok(shortRow && longRow, 'expected the explicit and long draft rows');
     assertRowCentered('explicit openai row', shortRow);
     assertRowCentered('long wrapping row', longRow);
-    // The long identifier must actually wrap so centering is exercised on a
-    // multi-line cell rather than a single line.
-    assert.ok(longRow.cellHeight > shortRow.cellHeight,
-      'long id should wrap: long cell ' + longRow.cellHeight + ' vs short ' + shortRow.cellHeight);
-    results.push('manual row text centers on a compact (>=24px) delete button');
+    // The long identifier must genuinely wrap (multiple line boxes); its row
+    // height may match the short row under the shared small control size.
+    assert.equal(shortRow.idLines, 1, 'short id should stay on one line');
+    assert.ok(longRow.idLines >= 2, 'long id should wrap into multiple line boxes, got ' + longRow.idLines);
+    results.push('manual row text centers on the shared small delete control');
+
+    // Every live button opts into the shared contract with the right variant.
+    // The white theme keeps the computed semantic colors deterministic.
+    await setPageTheme(page, 'white');
+    const buttons = await readButtons(page);
+    evidence.buttons = buttons;
+    assertButtonContract('live buttons', buttons);
+    const byId = (id) => buttons.find((button) => button.id === id);
+    const has = (button, ...classes) => button && classes.every((name) => button.classes.includes(name));
+    for (const id of ['refresh-btn', 'import-btn', 'manual-model-save']) {
+      assert.ok(has(byId(id), 'btn', 'btn-primary'), id + ' must be a primary .btn');
+    }
+    for (const id of ['reload-btn', 'manual-model-add', 'manual-model-reload']) {
+      assert.ok(has(byId(id), 'btn', 'btn-secondary'), id + ' must be a secondary .btn');
+    }
+    const quotaButtons = buttons.filter((button) => button.action === 'quota');
+    assert.ok(quotaButtons.length >= 1 && quotaButtons.every((button) => has(button, 'btn', 'btn-secondary', 'btn-sm')));
+    const credentialDeletes = buttons.filter((button) => button.action === 'delete');
+    assert.ok(credentialDeletes.length >= 1 && credentialDeletes.every((button) => has(button, 'btn', 'btn-danger', 'btn-sm')));
+    const draftDeletes = buttons.filter((button) => button.inDraft);
+    assert.ok(draftDeletes.length >= 1 && draftDeletes.every((button) => has(button, 'btn', 'btn-danger', 'btn-sm')));
+    results.push('all live buttons carry .btn with the contracted semantics and sizes');
+
+    // Keyboard focus: a tab-focused button shows the shared focus outline.
+    await page.mouse.move(0, 0);
+    await page.evaluate(() => { if (document.activeElement) document.activeElement.blur(); });
+    let focus = null;
+    for (let i = 0; i < 40 && !focus; i++) {
+      await page.keyboard.press('Tab');
+      focus = await page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el || el.tagName !== 'BUTTON') return null;
+        const style = getComputedStyle(el);
+        return {
+          label: el.textContent,
+          focusVisible: el.matches(':focus-visible'),
+          outlineStyle: style.outlineStyle,
+          outlineWidth: style.outlineWidth,
+          outlineOffset: style.outlineOffset,
+          outlineColor: style.outlineColor
+        };
+      });
+    }
+    assert.ok(focus, 'a button should receive keyboard focus');
+    assert.equal(focus.focusVisible, true, 'focused button should match :focus-visible');
+    assert.equal(focus.outlineStyle, 'solid');
+    assert.equal(focus.outlineWidth, '2px');
+    assert.equal(focus.outlineOffset, '3px');
+    assert.equal(focus.outlineColor, 'rgb(45, 42, 38)');
+    results.push('keyboard focus shows the shared .btn focus outline');
+
+    // Hover: a secondary button moves to the contracted hover border.
+    await page.locator('#manual-model-add').hover();
+    await page.waitForFunction(
+      () => getComputedStyle(document.getElementById('manual-model-add')).borderColor === 'rgb(204, 204, 204)',
+      { timeout: 2000 }
+    );
+    results.push('secondary hover applies the shared hover border');
+    // Leave the pointer off the buttons so screenshots never show hover state.
+    await page.mouse.move(0, 0);
 
     // Light / white / dark close-ups of the manual editor at desktop width.
     for (const theme of ['light', 'white', 'dark']) {
       await setPageTheme(page, theme);
-      await page.locator('section[aria-labelledby="models-heading"]')
-        .screenshot({ path: path.join(out, 'manual-models-' + theme + '-1280.png') });
+      await screenshotStable(
+        page.locator('section[aria-labelledby="models-heading"]'),
+        path.join(out, 'manual-models-' + theme + '-1280.png')
+      );
     }
     results.push('light/white/dark manual editor close-ups at 1280');
 
@@ -231,7 +386,7 @@ async function main() {
       'page overflows: ' + mobile.pageScrollWidth + ' > ' + mobile.innerWidth);
     assert.ok(mobile.wrapScrollWidth > mobile.wrapClientWidth,
       'wide draft table should scroll inside its wrapper');
-    await page.screenshot({ path: path.join(out, 'manual-models-390.png'), fullPage: true });
+    await screenshotStable(page, path.join(out, 'manual-models-390.png'));
     results.push('mobile keeps table-internal scroll without page overflow');
     assert.deepEqual(errors, []);
     results.push('no browser exceptions');
@@ -239,6 +394,7 @@ async function main() {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   }
+  fs.writeFileSync(path.join(out, 'models-geometry.json'), JSON.stringify(evidence, null, 2));
   fs.writeFileSync(path.join(out, 'models-results.json'), JSON.stringify(results, null, 2));
   console.log(results.length + '/' + results.length + ' passed');
 }

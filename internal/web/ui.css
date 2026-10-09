@@ -229,7 +229,6 @@ textarea {
   overflow-x: auto;
 }
 
-button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
@@ -245,54 +244,83 @@ textarea:focus-visible {
   margin-top: 0.5rem;
 }
 
-button {
+/* Shared button contract (see workspace BUTTONS.md): one base class plus
+ * explicit semantic variants, with size coming only from .btn-sm. */
+.btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 0.5rem;
-  padding: 0.625rem 0.875rem;
-  border: 1px solid var(--border-color);
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-  background: var(--bg-secondary);
+  background-color: var(--bg-secondary);
   color: var(--text-primary);
   font: inherit;
+  font-size: 16px;
   font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
 }
 
-button:hover:not(:disabled) {
-  background: var(--bg-hover);
-  border-color: var(--border-hover);
-}
-
-button[type="submit"] {
-  background: var(--primary-color);
+.btn-primary {
+  background-color: var(--primary-color);
   border-color: var(--primary-color);
   color: var(--primary-contrast);
 }
 
-button[type="submit"]:hover:not(:disabled) {
-  background: var(--primary-hover);
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--primary-hover);
   border-color: var(--primary-hover);
 }
 
-button.danger {
-  background: var(--error-color);
-  border-color: var(--error-color);
-  color: #ffffff;
-  padding: 0.3rem 0.6rem;
-  font-size: 0.8125rem;
+.btn-secondary {
+  background-color: var(--bg-tertiary);
+  border-color: var(--border-color);
 }
 
-button.danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--error-color) 88%, #000000);
+.btn-secondary:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  border-color: var(--border-hover);
+}
+
+.btn-ghost {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.btn-danger {
+  background-color: var(--error-color);
+  border-color: var(--error-color);
+  color: var(--primary-contrast);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--error-color) 88%, #000000);
   border-color: color-mix(in srgb, var(--error-color) 88%, #000000);
 }
 
-button:disabled {
+.btn-sm {
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 3px;
 }
 
 .status {
@@ -523,7 +551,7 @@ a:hover {
 
 @media (prefers-reduced-motion: reduce) {
   body,
-  button,
+  .btn,
   input[type="password"],
   input[type="text"],
   textarea {
@@ -553,15 +581,8 @@ a:hover {
   background: var(--bg-secondary);
 }
 
-/* The manual-model draft table: center each row's text against the compact row
- * delete button instead of the global top alignment used by the data tables. */
+/* The manual-model draft table centers each row's text against its row action
+ * instead of the global top alignment used by the data tables. */
 .manual-model-table td {
   vertical-align: middle;
-}
-
-.manual-model-table td button {
-  white-space: nowrap;
-  padding: 0.3rem 0.6rem;
-  font-size: 0.8125rem;
-  line-height: 1.2;
 }

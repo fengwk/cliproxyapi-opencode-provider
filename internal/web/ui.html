@@ -26,7 +26,7 @@
         <p id="mgmt-key-hint" class="hint">远程访问需在 CPA 中启用远程管理（remote management）；密钥错误多次可能导致当前 IP 被临时封禁，本页面不会自动重试认证。</p>
       </div>
       <div class="actions">
-        <button type="submit" id="refresh-btn">连接并刷新</button>
+        <button type="submit" id="refresh-btn" class="btn btn-primary">连接并刷新</button>
       </div>
     </form>
   </section>
@@ -46,7 +46,7 @@
         <p id="label-hint" class="hint">用于在 CPA 中区分这批密钥，最长 128 个字符。</p>
       </div>
       <div class="actions">
-        <button type="submit" id="import-btn">导入密钥</button>
+        <button type="submit" id="import-btn" class="btn btn-primary">导入密钥</button>
         <span id="import-progress" class="hint" hidden>正在提交…</span>
       </div>
     </form>
@@ -55,7 +55,7 @@
   <section class="card" aria-labelledby="list-heading">
     <div class="section-head">
       <h2 id="list-heading">3. 已托管的密钥</h2>
-      <button type="button" id="reload-btn">刷新列表</button>
+      <button type="button" id="reload-btn" class="btn btn-secondary">刷新列表</button>
     </div>
     <p id="summary" class="hint">尚未加载。</p>
     <p id="status" class="status" role="status" aria-live="polite">尚未加载。请输入 CPA 管理密钥并点击“连接并刷新”。</p>
@@ -123,7 +123,7 @@
           <option value="openai-response">OpenAI Responses</option>
         </select>
       </div>
-      <button id="manual-model-add" type="button">添加到草稿</button>
+      <button id="manual-model-add" type="button" class="btn btn-secondary">添加到草稿</button>
     </div>
     <div class="table-wrap">
       <table class="manual-model-table">
@@ -134,8 +134,8 @@
     </div>
     <p class="hint">最多 100 个唯一 ID，每个不超过 200 UTF-8 字节。删除只修改草稿；点击保存才写入 CPA 配置。清空并保存可取消全部手动注册。不会覆盖基础地址或旧协议覆盖配置。</p>
     <div class="actions">
-      <button id="manual-model-save" type="button" disabled>保存手动模型</button>
-      <button id="manual-model-reload" type="button">重新加载 / 放弃草稿</button>
+      <button id="manual-model-save" type="button" class="btn btn-primary" disabled>保存手动模型</button>
+      <button id="manual-model-reload" type="button" class="btn btn-secondary">重新加载 / 放弃草稿</button>
     </div>
     <p id="manual-model-status" class="status info" role="status" aria-live="polite">连接后加载，或输入管理密钥再点击重新加载。</p>
   </section>

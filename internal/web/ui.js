@@ -848,6 +848,7 @@ function initUi() {
       : "密钥 " + toCellText(row.rawName) + " 缺少可用的凭据索引，无法查看配额";
     var quotaButton = doc.createElement("button");
     quotaButton.type = "button";
+    quotaButton.className = "btn btn-secondary btn-sm";
     quotaButton.setAttribute("data-action", "quota");
     quotaButton.setAttribute("data-auth-index", row.authIndex);
     quotaButton.setAttribute("data-file-name", row.rawName);
@@ -860,7 +861,7 @@ function initUi() {
     if (row.deletable) {
       var button = doc.createElement("button");
       button.type = "button";
-      button.className = "danger";
+      button.className = "btn btn-danger btn-sm";
       button.setAttribute("data-action", "delete");
       button.setAttribute("data-file-name", row.rawName);
       button.textContent = "删除";
@@ -1206,6 +1207,7 @@ function initUi() {
       var actions = doc.createElement("td");
       var remove = doc.createElement("button");
       remove.type = "button";
+      remove.className = "btn btn-danger btn-sm";
       remove.textContent = "删除";
       remove.disabled = busy || !secureContext;
       remove.addEventListener("click", function () {

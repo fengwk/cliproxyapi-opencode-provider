@@ -72,14 +72,19 @@ It validates:
 - deleting all rows and saving persists an empty manual catalog and disables the
   save button;
 - an empty catalog renders one spanning placeholder row;
-- the reported `step-5-preview-free` / `openai` row (plus a long wrapping id)
-  centers its text on a compact `>= 24px` delete button, and the add button
-  shares the input/select bottom edge;
-- the manual editor renders light / white / dark close-ups at 1280px;
+- every live button (connect / import / save primary, reload / add / discard
+  secondary, quota secondary-small, credential and draft-row delete
+  danger-small) carries `.btn` with one semantic variant and the shared 46px /
+  39px dimensions, hover, disabled and keyboard-focus treatment;
+- the `step-5-preview-free` / `openai` row centers its text on the shared small
+  delete control, a long id genuinely wraps (multiple line boxes), and the add
+  button shares the input/select bottom edge;
+- the manual editor renders light / white / dark close-ups at 1280px with
+  transitions settled (`animations: 'disabled'`);
 - the 390px viewport keeps the wide draft table scrolling inside its wrapper
   (table-internal scroll) without page-level horizontal overflow, and no browser
   exception is raised.
 
 `CHROMIUM_PATH` selects the browser (default `/usr/bin/chromium`).
-`models-results.json` and screenshots are written to the argument directory and
-never into the repository.
+`models-results.json`, `models-geometry.json` and screenshots are written to the
+argument directory and never into the repository.

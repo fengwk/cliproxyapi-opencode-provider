@@ -299,12 +299,14 @@ test("ui.html shows the plugin display name and keeps the technical ID", () => {
   assert.ok(html.includes("导入 OpenCode Go 密钥"));
 });
 
-// The manual-model alignment fix is CSS-only and stays scoped: the credential
-// and quota tables keep the global top alignment, the draft table centers each
-// row on a compact delete button, and the control row shares one bottom edge.
-test("manual-model alignment rules stay scoped to the draft table and control row", () => {
+// The reusable .btn contract replaces type/table-specific button styling, and
+// every button (static markup and dynamic UI) opts into it with a semantic
+// variant; compactness comes only from .btn-sm. The manual-model alignment
+// scoping (draft-table centering and the control-row margin fix) is preserved.
+test("all buttons use the shared .btn contract instead of type/table-specific styling", () => {
   const css = readAsset("ui.css");
   const html = readAsset("ui.html");
+  const js = readAsset("ui.js");
   // Read a rule body anchored at a line start so a lookalike selector (e.g.
   // ".model-fields input, .model-fields select") never satisfies another rule.
   const rule = (selector) => {
@@ -315,17 +317,61 @@ test("manual-model alignment rules stay scoped to the draft table and control ro
     assert.ok(match, "missing CSS rule: " + selector);
     return match[1];
   };
-  // Only the manual draft table opts into the scoped treatment.
-  assert.match(html, /<table class="manual-model-table">/);
-  // Other tables (credentials, quota) keep the global top alignment.
+  // The frozen shared base and semantic variants are present verbatim.
+  const base = rule(".btn");
+  for (const declaration of [
+    "display: inline-flex", "gap: 8px", "padding: 10px 14px",
+    "border: 1px solid transparent", "background-color: var(--bg-secondary)",
+    "font-size: 16px", "font-weight: 600", "line-height: 1.5", "white-space: nowrap"
+  ]) {
+    assert.ok(base.includes(declaration), "`.btn` must declare " + declaration);
+  }
+  assert.match(rule(".btn-primary"), /background-color:\s*var\(--primary-color\)/);
+  assert.match(rule(".btn-secondary"), /background-color:\s*var\(--bg-tertiary\)/);
+  assert.match(rule(".btn-ghost"), /background-color:\s*transparent/);
+  assert.match(rule(".btn-danger"), /background-color:\s*var\(--error-color\)/);
+  const small = rule(".btn-sm");
+  assert.match(small, /padding:\s*8px 10px/);
+  assert.match(small, /font-size:\s*14px/);
+  assert.match(rule(".btn:disabled"), /opacity:\s*0\.6/);
+  assert.match(rule(".btn:focus-visible"), /outline:\s*2px solid var\(--text-primary\)/);
+  // No presentation coupling to the button type, the legacy .danger class or
+  // the manual draft table.
+  assert.doesNotMatch(css, /button\[type="submit"\]/);
+  assert.doesNotMatch(css, /button\.danger/);
+  assert.doesNotMatch(css, /\.manual-model-table td button/);
+  // Non-button focus styling survives the button refactor.
+  assert.match(
+    rule("a:focus-visible,\ninput:focus-visible,\ntextarea:focus-visible"),
+    /outline:\s*2px solid var\(--primary-color\)/
+  );
+  // Every static button carries .btn and exactly one semantic variant.
+  const semantics = ["btn-primary", "btn-secondary", "btn-danger", "btn-ghost"];
+  const staticButtons = html.match(/<button\b[^>]*>/g) || [];
+  assert.equal(staticButtons.length, 6);
+  for (const tag of staticButtons) {
+    assert.match(tag, /class="btn [^"]+"/, "static button must carry .btn: " + tag);
+    assert.equal(semantics.filter((variant) => tag.includes(variant)).length, 1, "one variant: " + tag);
+  }
+  const staticButton = (id) => {
+    const tag = (html.match(new RegExp('<button\\b[^>]*\\bid="' + id + '"[^>]*>')) || [])[0];
+    assert.ok(tag, "missing static button #" + id);
+    return tag;
+  };
+  for (const id of ["refresh-btn", "import-btn", "manual-model-save"]) {
+    assert.match(staticButton(id), /class="btn btn-primary"/, id + " must be primary");
+  }
+  for (const id of ["reload-btn", "manual-model-add", "manual-model-reload"]) {
+    assert.match(staticButton(id), /class="btn btn-secondary"/, id + " must be secondary");
+  }
+  // Dynamic buttons wire the shared classes in ui.js.
+  assert.match(js, /quotaButton\.className = "btn btn-secondary btn-sm";/);
+  assert.equal((js.match(/className = "btn btn-danger btn-sm";/g) || []).length, 2);
+  assert.doesNotMatch(js, /className = "danger"/);
+  // The manual-model alignment scoping is preserved (no table-specific button
+  // presentation, draft rows still center, control row still shares a bottom).
   assert.match(rule("th,\ntd"), /vertical-align:\s*top/);
   assert.match(rule(".manual-model-table td"), /vertical-align:\s*middle/);
-  const button = rule(".manual-model-table td button");
-  assert.match(button, /white-space:\s*nowrap/);
-  assert.match(button, /font-size:\s*0\.8125rem/);
-  assert.match(button, /line-height:\s*1\.2/);
-  // The flex control row owns the outer spacing; its fields add none, and the
-  // select inherits the input font so all three controls share a bottom edge.
   assert.match(rule(".model-fields .field"), /margin:\s*0/);
   assert.match(rule(".model-fields"), /margin:\s*0\.75rem 0/);
   assert.match(rule(".model-fields select"), /font:\s*inherit/);

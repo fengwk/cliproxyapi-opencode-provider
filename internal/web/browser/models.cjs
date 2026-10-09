@@ -14,7 +14,8 @@ const LONG_ID = 'opencode-go/' + 'wrapped-model-identifier-'.repeat(5) + 'end';
 
 // Shared token contract: computed body background per theme.
 const THEME_BG = { light: 'rgb(250, 249, 245)', white: 'rgb(255, 255, 255)', dark: 'rgb(21, 20, 18)' };
-// Shared button contract (BUTTONS.md): normal controls are 46px, .btn-sm is 39px.
+const SECONDARY_BG = { light: 'rgb(233, 230, 223)', white: 'rgb(246, 246, 246)', dark: 'rgb(38, 35, 32)' };
+// Normal controls are 46px high; small controls are 39px high.
 const BUTTON_HEIGHT = { normal: 46, small: 39 };
 const SEMANTICS = ['btn-primary', 'btn-secondary', 'btn-danger', 'btn-ghost'];
 
@@ -119,7 +120,7 @@ async function readButtons(page) {
 
 // Every live button carries .btn with exactly one semantic variant; the shared
 // size classes dictate the rendered dimensions.
-function assertButtonContract(label, buttons) {
+function assertButtonContract(label, buttons, theme = 'white') {
   assert.ok(buttons.length >= 9, label + ': expected every live button, got ' + buttons.length);
   for (const button of buttons) {
     const where = label + ': ' + (button.id || button.action || button.label);
@@ -142,7 +143,7 @@ function assertButtonContract(label, buttons) {
       assert.equal(button.color, 'rgb(255, 255, 255)', where + ' danger text');
     }
     if (button.classes.includes('btn-secondary')) {
-      assert.equal(button.background, 'rgb(246, 246, 246)', where + ' secondary background');
+      assert.equal(button.background, SECONDARY_BG[theme], where + ' secondary background');
     }
   }
 }
@@ -187,7 +188,7 @@ async function main() {
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', headless: true });
   const results = [];
   const errors = [];
-  const evidence = {};
+  const evidence = { themes: { desktop: {}, mobile: {} } };
   const config = { enabled: true, 'base-url': 'https://example.invalid/v1', models: [{ id: 'old', protocol: 'openai' }], 'manual-models': [] };
   // One managed credential renders the quota (secondary small) and delete
   // (danger small) actions alongside the manual draft rows.
@@ -354,7 +355,7 @@ async function main() {
     await page.locator('#manual-model-add').hover();
     await page.waitForFunction(
       () => getComputedStyle(document.getElementById('manual-model-add')).borderColor === 'rgb(204, 204, 204)',
-      { timeout: 2000 }
+      null, { timeout: 2000 }
     );
     results.push('secondary hover applies the shared hover border');
     // Leave the pointer off the buttons so screenshots never show hover state.
@@ -363,6 +364,9 @@ async function main() {
     // Light / white / dark close-ups of the manual editor at desktop width.
     for (const theme of ['light', 'white', 'dark']) {
       await setPageTheme(page, theme);
+      const themedButtons = await readButtons(page);
+      assertButtonContract('desktop ' + theme, themedButtons, theme);
+      evidence.themes.desktop[theme] = themedButtons;
       await screenshotStable(
         page.locator('section[aria-labelledby="models-heading"]'),
         path.join(out, 'manual-models-' + theme + '-1280.png')
@@ -386,7 +390,21 @@ async function main() {
       'page overflows: ' + mobile.pageScrollWidth + ' > ' + mobile.innerWidth);
     assert.ok(mobile.wrapScrollWidth > mobile.wrapClientWidth,
       'wide draft table should scroll inside its wrapper');
-    await screenshotStable(page, path.join(out, 'manual-models-390.png'));
+    for (const theme of ['light', 'white', 'dark']) {
+      await setPageTheme(page, theme);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+      const themedButtons = await readButtons(page);
+      assertButtonContract('mobile ' + theme, themedButtons, theme);
+      evidence.themes.mobile[theme] = themedButtons;
+      await page.screenshot({
+        path: path.join(out, 'manual-models-' + theme + '-390.png'),
+        fullPage: true,
+        animations: 'disabled'
+      });
+    }
+    await setPageTheme(page, 'light');
+    await page.screenshot({ path: path.join(out, 'manual-models-390.png'), fullPage: true, animations: 'disabled' });
+    results.push('all live buttons follow the shared contract in three desktop/mobile themes');
     results.push('mobile keeps table-internal scroll without page overflow');
     assert.deepEqual(errors, []);
     results.push('no browser exceptions');

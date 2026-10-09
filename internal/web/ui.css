@@ -244,8 +244,7 @@ textarea:focus-visible {
   margin-top: 0.5rem;
 }
 
-/* Shared button contract (see workspace BUTTONS.md): one base class plus
- * explicit semantic variants, with size coming only from .btn-sm. */
+/* Buttons share one base, a semantic variant, and an optional small size. */
 .btn {
   display: inline-flex;
   align-items: center;

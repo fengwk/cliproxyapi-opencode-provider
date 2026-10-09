@@ -79,7 +79,8 @@ It validates:
 - the `step-5-preview-free` / `openai` row centers its text on the shared small
   delete control, a long id genuinely wraps (multiple line boxes), and the add
   button shares the input/select bottom edge;
-- the manual editor renders light / white / dark close-ups at 1280px with
+- all live button styles are checked in light / white / dark at 1280px and
+  390px; screenshots include desktop close-ups and full mobile pages with
   transitions settled (`animations: 'disabled'`);
 - the 390px viewport keeps the wide draft table scrolling inside its wrapper
   (table-internal scroll) without page-level horizontal overflow, and no browser

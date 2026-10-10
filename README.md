@@ -21,7 +21,7 @@ CLIProxyAPI (CPA) 的原生插件，目前支持 OpenCode Go。独立仓库、�
 
 ## 安装与使用
 
-要求：支持原生插件的 CPA v8。真实宿主测试覆盖 v8.0.15 和 v8.0.16；
+要求：支持原生插件的 CPA v8。真实宿主测试覆盖 v8.0.15 和 v8.0.23；
 更高 v8 版本由 CI 每日验证，不保证未通过测试的版本或 v9 兼容。
 SDK 精确版本锁定在 `go.mod`，由自动维护链路在验证兼容后升级。
 
@@ -148,9 +148,11 @@ curl http://127.0.0.1:8317/v1/chat/completions \
 周期和重置时间以上游响应为准，插件不硬编码滚动窗口时长或推算余额。
 
 插件注册 CPA 原生 `QuotaProvider`，让 `opencode-go` 凭据带有 `supports_quota: true`
-和 `quota_provider: opencode-go`。支持通用插件配额的管理前端可以直接展示。**官方管理
-前端的“配额管理”页目前仍只适配内置提供商，安装本插件不会自动增加该页面的卡片**；
-在前端完成适配前，请使用插件页或下面的原生 API，无需修改 CPA 核心。
+和 `quota_provider: opencode-go`。**官方管理面板 v1.26.1 起**会通过
+`GET /v8/management/plugins` 发现该插件，并直接渲染通用的 `/quota` 插件卡片，无需修改
+CPA 核心。v1.26.0 及更早版本仍请求已下线的 `/v8/management/quota/fetch`，刷新会返回
+404；这是面板版本过旧，升级管理面板即可，并非 CPA 版本过旧。在升级面板前，可继续使用
+插件页或下面的原生 API。
 
 ```bash
 # 使用 CPA 管理密钥；返回文件名、标签和查询所需的 auth_index，不返回上游密钥。
@@ -158,13 +160,15 @@ curl http://127.0.0.1:8317/v0/management/plugins/cliproxyapi-opencode-provider/k
   -H "Authorization: Bearer $CPA_MANAGEMENT_KEY"
 
 # AUTH_INDEX 取自上述已托管密钥列表。
-curl http://127.0.0.1:8317/v0/management/plugins/cliproxyapi-opencode-provider/quota \
+# 官方管理面板 v1.26.1 的主路径：仅 auth_index，不带 provider。
+curl http://127.0.0.1:8317/v8/management/plugins/cliproxyapi-opencode-provider/quota \
   -H "Authorization: Bearer $CPA_MANAGEMENT_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"auth_index\":\"$AUTH_INDEX\"}"
 ```
 
-同样可以使用 `POST /v0/management/quota/fetch`，或
+旧版脚本仍可使用 `POST /v0/management/quota/fetch`、
+`POST /v0/management/plugins/cliproxyapi-opencode-provider/quota` 或
 `GET /v8/management/plugins/cliproxyapi-opencode-provider/quota?auth_index=...`。
 发现接口为 `GET /v0/management/quota/providers`；以上接口均由 CPA 管理认证保护。
 每次查询通过宿主 HTTP 回调向配置的 `base-url` 追加 `/usage`，使用所选凭据进行一次

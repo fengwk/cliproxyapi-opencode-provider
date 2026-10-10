@@ -18,6 +18,25 @@ import (
 // resolves to for a quota read.
 const quotaUsagePath = "/v1/usage"
 
+// Management POST routes that resolve a credential by auth_index and read the
+// upstream usage endpoint. The v0 generic route and the v8 plugin-scoped route
+// (used by the official management panel) must behave identically.
+const (
+	quotaGenericFetchPath = "/v0/management/quota/fetch"
+	quotaV8PluginPath     = "/v8/management/plugins/" + pluginID + "/quota"
+)
+
+// quotaFetchRoutes are the management POST routes that select a credential by
+// auth_index. The v0 generic route and the v8 plugin route (used by the official
+// panel) must share authorization, validation and credential isolation behavior.
+var quotaFetchRoutes = []struct {
+	name string
+	path string
+}{
+	{"v0 generic", quotaGenericFetchPath},
+	{"v8 plugin", quotaV8PluginPath},
+}
+
 // Deterministic three-window fixture. Values are distinct per window so an
 // incorrect mapping (wrong order, wrong percentage, unforced rate limit, or a
 // dropped reset time) is observable.
@@ -91,6 +110,17 @@ type credentialEntry struct {
 	Disabled      bool   `json:"disabled"`
 	SupportsQuota bool   `json:"supports_quota"`
 	QuotaProvider string `json:"quota_provider"`
+}
+
+// v8PluginEntry is the subset of one official GET /v8/management/plugins row
+// the management panel matches against to route a credential's quota read.
+type v8PluginEntry struct {
+	ID               string `json:"id"`
+	Registered       bool   `json:"registered"`
+	Enabled          bool   `json:"enabled"`
+	EffectiveEnabled bool   `json:"effective_enabled"`
+	SupportsQuota    bool   `json:"supports_quota"`
+	QuotaProvider    string `json:"quota_provider"`
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -299,6 +329,66 @@ func TestQuotaProviderDiscovery(t *testing.T) {
 	assertListSanitized(t, body, h.authDir)
 }
 
+// TestQuotaV8ManagementDiscovery proves the official management panel can select
+// this plugin from the real v8 plugin listing: the row must carry the exact
+// identity and quota metadata the panel's first-pass match consumes, and the
+// listing must stay free of upstream key material. It asserts the row rather
+// than mirroring the panel algorithm.
+func TestQuotaV8ManagementDiscovery(t *testing.T) {
+	h := newHarness(t)
+	if status, body := h.importKeys(t, []string{keyAlpha, keyBeta}, "quota-v8-discovery"); status != http.StatusOK {
+		t.Fatalf("import keys status %d body %s", status, truncate(body, 400))
+	}
+
+	status, body := h.doJSON(t, http.MethodGet, "/v8/management/plugins", nil, managementHeaders())
+	if status != http.StatusOK {
+		t.Fatalf("GET /v8/management/plugins status %d body %s", status, truncate(body, 400))
+	}
+	var listing struct {
+		PluginsEnabled bool            `json:"plugins_enabled"`
+		Plugins        []v8PluginEntry `json:"plugins"`
+	}
+	if err := json.Unmarshal(body, &listing); err != nil {
+		t.Fatalf("plugin listing not JSON: %v\n%s", err, truncate(body, 400))
+	}
+	if !listing.PluginsEnabled {
+		t.Errorf("plugin listing plugins_enabled = false, want true")
+	}
+
+	var entry *v8PluginEntry
+	for i := range listing.Plugins {
+		if listing.Plugins[i].ID == pluginID {
+			entry = &listing.Plugins[i]
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("plugin %s missing from v8 listing: %s", pluginID, truncate(body, 400))
+	}
+
+	// The panel's first-pass match requires all four fields to agree.
+	if !entry.Registered {
+		t.Errorf("plugin %s registered = false, want true", pluginID)
+	}
+	if !entry.SupportsQuota {
+		t.Errorf("plugin %s supports_quota = false, want true", pluginID)
+	}
+	if entry.QuotaProvider != providerID {
+		t.Errorf("plugin %s quota_provider = %q, want %q", pluginID, entry.QuotaProvider, providerID)
+	}
+	if !entry.EffectiveEnabled {
+		t.Errorf("plugin %s effective_enabled = false, want true", pluginID)
+	}
+
+	// The public plugin listing must never echo upstream key material.
+	text := string(body)
+	for _, secret := range []string{keyAlpha, keyBeta} {
+		if strings.Contains(text, secret) {
+			t.Errorf("v8 plugin listing leaked credential %q", secret)
+		}
+	}
+}
+
 // TestQuotaFetchThreeWindows proves the normalized three-window mapping and the
 // upstream callback contract (GET base+/usage with the selected key, JSON Accept
 // and plugin User-Agent).
@@ -326,7 +416,9 @@ func TestQuotaFetchThreeWindows(t *testing.T) {
 }
 
 // TestQuotaPluginSpecificRoutes proves the plugin-scoped read routes (v0 GET/POST
-// and v8 GET) return the same normalized quota and each performs a fresh read.
+// and v8 GET/POST) return the same normalized quota and each performs a fresh
+// read. The v8 POST carries only auth_index, exactly as the official panel sends
+// it.
 func TestQuotaPluginSpecificRoutes(t *testing.T) {
 	h := newHarness(t)
 	if status, body := h.importKeys(t, []string{keyAlpha}, "quota-routes"); status != http.StatusOK {
@@ -343,7 +435,8 @@ func TestQuotaPluginSpecificRoutes(t *testing.T) {
 	}{
 		{"v0 GET", http.MethodGet, "/v0/management/plugins/" + pluginID + "/quota?auth_index=" + index, nil, 1},
 		{"v0 POST", http.MethodPost, "/v0/management/plugins/" + pluginID + "/quota", mustMarshal(map[string]any{"auth_index": index}), 2},
-		{"v8 GET", http.MethodGet, "/v8/management/plugins/" + pluginID + "/quota?auth_index=" + index, nil, 3},
+		{"v8 GET", http.MethodGet, quotaV8PluginPath + "?auth_index=" + index, nil, 3},
+		{"v8 POST", http.MethodPost, quotaV8PluginPath, mustMarshal(map[string]any{"auth_index": index}), 4},
 	}
 	for _, tc := range cases {
 		status, body := h.doJSON(t, tc.method, tc.path, tc.body, managementHeaders())
@@ -377,9 +470,16 @@ func TestQuotaRepeatedRefresh(t *testing.T) {
 }
 
 // TestQuotaCredentialIsolation proves the requested auth_index selects the
-// matching credential for the upstream read, so two keys do not leak into each
-// other's quota.
+// matching credential for the upstream read on every management quota route, so
+// two keys do not leak into each other's quota.
 func TestQuotaCredentialIsolation(t *testing.T) {
+	for _, route := range quotaFetchRoutes {
+		t.Run(route.name, func(t *testing.T) { testQuotaCredentialIsolation(t, route.path) })
+	}
+}
+
+func testQuotaCredentialIsolation(t *testing.T, route string) {
+	t.Helper()
 	h := newHarness(t)
 	if status, body := h.importKeys(t, []string{keyAlpha, keyBeta}, "quota-isolation"); status != http.StatusOK {
 		t.Fatalf("import keys status %d body %s", status, truncate(body, 400))
@@ -399,7 +499,7 @@ func TestQuotaCredentialIsolation(t *testing.T) {
 		{"beta", indexBeta, keyBeta},
 	} {
 		h.mock.reset()
-		status, body := h.doJSON(t, http.MethodPost, "/v0/management/quota/fetch",
+		status, body := h.doJSON(t, http.MethodPost, route,
 			mustMarshal(map[string]any{"auth_index": tc.index}), managementHeaders())
 		assertThreeWindows(t, decodeQuota(t, status, body))
 		call, ok := lastUpstreamCall(h, quotaUsagePath)
@@ -414,44 +514,54 @@ func TestQuotaCredentialIsolation(t *testing.T) {
 }
 
 // TestQuotaFetchValidation covers management authorization and request
-// validation for the generic fetch route.
+// validation on every quota POST route: both the v0 generic route and the v8
+// plugin route must reject unauthenticated, missing and unknown auth_index
+// requests without ever reading upstream.
 func TestQuotaFetchValidation(t *testing.T) {
+	for _, route := range quotaFetchRoutes {
+		t.Run(route.name, func(t *testing.T) { testQuotaFetchValidation(t, route.path) })
+	}
+}
+
+func testQuotaFetchValidation(t *testing.T, route string) {
+	t.Helper()
 	h := newHarness(t)
 	if status, body := h.importKeys(t, []string{keyAlpha}, "quota-validation"); status != http.StatusOK {
 		t.Fatalf("import keys status %d body %s", status, truncate(body, 400))
 	}
 	index := h.authIndexForKey(t, keyAlpha)
 
-	// Exactly one unauthenticated probe to avoid the failed-attempt ban.
-	status, _, err := h.rawRequest(http.MethodPost, "/v0/management/quota/fetch",
+	// Exactly one unauthenticated probe per host to avoid the failed-attempt ban.
+	status, _, err := h.rawRequest(http.MethodPost, route,
 		mustMarshal(map[string]any{"auth_index": index}), nil)
 	if err != nil {
-		t.Fatalf("unauthorized quota fetch: %v", err)
+		t.Fatalf("unauthorized %s: %v", route, err)
 	}
 	if status != http.StatusUnauthorized && status != http.StatusForbidden {
-		t.Errorf("unauthorized quota fetch status = %d, want 401 or 403", status)
+		t.Errorf("unauthorized %s status = %d, want 401 or 403", route, status)
 	}
 
 	// Missing auth_index is a client error, never a quota read.
 	h.mock.reset()
-	status, body := h.doJSON(t, http.MethodPost, "/v0/management/quota/fetch",
+	status, body := h.doJSON(t, http.MethodPost, route,
 		mustMarshal(map[string]any{}), managementHeaders())
 	if status != http.StatusBadRequest {
-		t.Errorf("missing auth_index status = %d body %s, want 400", status, truncate(body, 300))
+		t.Errorf("%s missing auth_index status = %d body %s, want 400", route, status, truncate(body, 300))
 	}
 	if calls := len(h.mock.callsForPath(quotaUsagePath)); calls != 0 {
-		t.Errorf("missing auth_index performed %d upstream quota calls, want 0", calls)
+		t.Errorf("%s missing auth_index performed %d upstream quota calls, want 0", route, calls)
 	}
 
 	// Unknown auth_index is a not-found, never a quota read.
-	status, body = h.doJSON(t, http.MethodPost, "/v0/management/quota/fetch",
+	status, body = h.doJSON(t, http.MethodPost, route,
 		mustMarshal(map[string]any{"auth_index": "does-not-exist"}), managementHeaders())
 	if status != http.StatusNotFound {
-		t.Errorf("unknown auth_index status = %d body %s, want 404", status, truncate(body, 300))
+		t.Errorf("%s unknown auth_index status = %d body %s, want 404", route, status, truncate(body, 300))
 	}
 	if calls := len(h.mock.callsForPath(quotaUsagePath)); calls != 0 {
-		t.Errorf("unknown auth_index performed %d upstream quota calls, want 0", calls)
+		t.Errorf("%s unknown auth_index performed %d upstream quota calls, want 0", route, calls)
 	}
+	h.mock.requireClean(t)
 }
 
 // TestQuotaMalformedUpstreamIsSanitized proves an invalid upstream payload

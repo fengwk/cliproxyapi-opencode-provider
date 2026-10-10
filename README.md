@@ -150,8 +150,8 @@ curl http://127.0.0.1:8317/v1/chat/completions \
 插件注册 CPA 原生 `QuotaProvider`，让 `opencode-go` 凭据带有 `supports_quota: true`
 和 `quota_provider: opencode-go`。**官方管理面板 v1.26.1 起**会通过
 `GET /v8/management/plugins` 发现该插件，并直接渲染通用的 `/quota` 插件卡片，无需修改
-CPA 核心。v1.26.0 及更早版本仍请求已下线的 `/v8/management/quota/fetch`，刷新会返回
-404；这是面板版本过旧，升级管理面板即可，并非 CPA 版本过旧。在升级面板前，可继续使用
+CPA 核心。v1.26.0 的通用插件额度卡请求 `/v8/management/quota/fetch`，但 CPA v8 未注册
+该路由，因此刷新返回 404；升级管理面板即可，并非 CPA 版本过旧。在升级面板前，可继续使用
 插件页或下面的原生 API。
 
 ```bash

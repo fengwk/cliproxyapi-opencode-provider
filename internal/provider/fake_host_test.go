@@ -38,6 +38,7 @@ type fakeHost struct {
 	closed       []string
 	closeDetail  []streamClose
 	closeCh      chan string
+	emitCh       chan string
 
 	forcedErrors map[string]error
 }
@@ -63,6 +64,7 @@ func newFakeHost() *fakeHost {
 		stopClosed:    map[string]bool{},
 		emitPayloads:  map[string][][]byte{},
 		closeCh:       make(chan string, 32),
+		emitCh:        make(chan string, 64),
 		forcedErrors:  map[string]error{},
 	}
 }
@@ -239,6 +241,10 @@ func (f *fakeHost) call(method string, payload []byte) ([]byte, error) {
 		f.mu.Lock()
 		f.emitPayloads[req.StreamID] = append(f.emitPayloads[req.StreamID], req.Payload)
 		f.mu.Unlock()
+		select {
+		case f.emitCh <- req.StreamID:
+		default:
+		}
 		return okResult(struct{}{})
 	case pluginabi.MethodHostStreamClose:
 		var req struct {

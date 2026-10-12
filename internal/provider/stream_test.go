@@ -386,3 +386,101 @@ func TestStreamNativeRawPassthroughCompleteEvents(t *testing.T) {
 		})
 	}
 }
+
+// translatedChatRequest builds a Chat-upstream to Responses-client streaming
+// request, the cross-protocol path that must refresh the SDK terminal state.
+func translatedChatRequest() pluginapi.ExecutorRequest {
+	req := baseExecRequest()
+	req.Model = "opencode-go/glm-5"
+	req.Format = "openai-response"
+	req.SourceFormat = "openai-response"
+	req.Stream = true
+	req.Payload = []byte(`{"model":"opencode-go/glm-5","stream":true,"input":[{"role":"user","content":"hi"}]}`)
+	req.OriginalRequest = req.Payload
+	return req
+}
+
+// runTranslatedChatStream drives one Chat-upstream to Responses-client stream.
+func runTranslatedChatStream(t *testing.T, sse string, chunkSize int) *fakeHost {
+	t.Helper()
+	host := newFakeHost()
+	host.queueStream(splitBytes([]byte(sse), chunkSize)...)
+	manager := configuredManager(t, host, "")
+	rawResp, err := manager.HandleCall(pluginabi.MethodExecutorExecuteStream, streamExecBytes(t, translatedChatRequest(), "down-stream", "cb"))
+	if err != nil {
+		t.Fatalf("execute stream: %v", err)
+	}
+	decodeResult(t, rawResp, nil)
+	if !waitForClose(t, host, 3*time.Second) {
+		t.Fatalf("downstream stream was not closed")
+	}
+	return host
+}
+
+// TestStreamChatUpstreamMissingDoneFlushesTerminal verifies that a Chat upstream
+// proving completion with a genuine finish_reason and a clean EOF but omitting
+// the [DONE] sentinel still yields exactly one terminal Responses event with
+// the late usage, instead of closing with no terminal state.
+func TestStreamChatUpstreamMissingDoneFlushesTerminal(t *testing.T) {
+	sse := "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5,\"total_tokens\":8}}\n\n"
+	host := runTranslatedChatStream(t, sse, 5)
+	if err := lastCloseError(host); err != "" {
+		t.Fatalf("close error = %q, want success", err)
+	}
+	emitted := joinedEmitted(host, "down-stream")
+	if got := strings.Count(emitted, `"type":"response.completed"`); got != 1 {
+		t.Fatalf("terminal event count = %d, want exactly 1: %q", got, emitted)
+	}
+	if !strings.Contains(emitted, "Hi") {
+		t.Fatalf("translated content missing: %q", emitted)
+	}
+	if !strings.Contains(emitted, `"total_tokens":8`) {
+		t.Fatalf("terminal usage missing: %q", emitted)
+	}
+}
+
+// TestStreamChatUpstreamTruncatedTailEmitsNoTerminal verifies a half frame after
+// a proven finish_reason is not completed: the SDK terminal event must not be
+// fabricated and the stream must fail closed.
+func TestStreamChatUpstreamTruncatedTailEmitsNoTerminal(t *testing.T) {
+	sse := "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"usage\":"
+	host := runTranslatedChatStream(t, sse, 5)
+	if err := lastCloseError(host); err == "" {
+		t.Fatalf("truncated tail must fail closed: %+v", host.closes())
+	}
+	if emitted := joinedEmitted(host, "down-stream"); strings.Contains(emitted, "response.completed") || strings.Contains(emitted, "response.incomplete") {
+		t.Fatalf("truncated stream must not synthesize a terminal event: %q", emitted)
+	}
+}
+
+// TestStreamChatUpstreamNoTerminalEmitsNoTerminal verifies a clean EOF without a
+// genuine finish_reason fails closed and never yields a terminal event.
+func TestStreamChatUpstreamNoTerminalEmitsNoTerminal(t *testing.T) {
+	sse := "data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n"
+	host := runTranslatedChatStream(t, sse, 5)
+	if err := lastCloseError(host); err == "" {
+		t.Fatalf("missing terminal must fail closed: %+v", host.closes())
+	}
+	if emitted := joinedEmitted(host, "down-stream"); strings.Contains(emitted, "response.completed") || strings.Contains(emitted, "response.incomplete") {
+		t.Fatalf("incomplete stream must not synthesize a terminal event: %q", emitted)
+	}
+}
+
+// TestStreamTranslatedRejectsNonObjectFrame verifies a legal JSON array from a
+// Chat upstream is rejected on the cross-protocol path instead of being fed to
+// the translator as a chunk.
+func TestStreamTranslatedRejectsNonObjectFrame(t *testing.T) {
+	host := runTranslatedChatStream(t, "data: []\n\ndata: [DONE]\n\n", 4)
+	if err := lastCloseError(host); err == "" {
+		t.Fatalf("non-object frame must fail closed: %+v", host.closes())
+	}
+	for _, frame := range host.emitted("down-stream") {
+		if strings.Contains(string(frame), "[]") {
+			t.Fatalf("non-object frame must not be fed forward: %q", frame)
+		}
+	}
+}

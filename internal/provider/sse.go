@@ -30,18 +30,19 @@ type sseEvent struct {
 }
 
 // sseEventFramer reassembles complete Server-Sent Events from arbitrarily split
-// upstream reads. It tolerates CRLF termination, comment lines (": ..."), UTF-8
-// payloads split at any byte boundary, and joins multiple consecutive data lines
-// of one event with "\n" per the SSE specification so the semantic translator
-// receives exactly one combined payload per event. Complete comment/heartbeat
-// events are dispatched too, with a nil Data, so raw passthrough can forward
-// them at event boundaries.
+// upstream reads. It tolerates LF, CRLF and lone CR termination, comment lines
+// (": ..."), UTF-8 payloads split at any byte boundary, a single leading UTF-8
+// BOM, and joins multiple consecutive data lines of one event with "\n" per the
+// SSE specification so the semantic translator receives exactly one combined
+// payload per event. Complete comment/heartbeat events are dispatched too, with
+// a nil Data, so raw passthrough can forward them at event boundaries.
 type sseEventFramer struct {
-	buf  []byte
-	data [][]byte
-	size int
-	raw  []byte
-	any  bool
+	buf     []byte
+	data    [][]byte
+	size    int
+	raw     []byte
+	any     bool
+	started bool // the stream start has been inspected for a leading BOM
 }
 
 // push feeds raw upstream bytes. It invokes emit once per dispatched event. It
@@ -52,14 +53,15 @@ func (f *sseEventFramer) push(chunk []byte, emit func(sseEvent) bool) error {
 		return nil
 	}
 	f.buf = append(f.buf, chunk...)
+	f.stripBOM()
 	for {
-		index := bytes.IndexByte(f.buf, '\n')
+		index, width := nextLineBreak(f.buf)
 		if index < 0 {
 			break
 		}
-		physical := f.buf[:index+1]
-		f.buf = f.buf[index+1:]
-		if err := f.line(physical, emit); err != nil {
+		physical := f.buf[:index+width]
+		f.buf = f.buf[index+width:]
+		if err := f.line(physical, width, emit); err != nil {
 			return err
 		}
 	}
@@ -70,22 +72,76 @@ func (f *sseEventFramer) push(chunk []byte, emit func(sseEvent) bool) error {
 }
 
 // finish reports whether the upstream ended at an event boundary. A trailing
-// partial line or an undispatched event means the stream was truncated.
-func (f *sseEventFramer) finish() error {
+// lone CR is a valid line terminator that push deferred in case the next read
+// completed a CRLF, so it is flushed here; any other partial line or an
+// undispatched event means the stream was truncated.
+func (f *sseEventFramer) finish(emit func(sseEvent) bool) error {
+	if len(f.buf) > 0 && f.buf[len(f.buf)-1] == '\r' {
+		physical := f.buf
+		f.buf = nil
+		if err := f.line(physical, 1, emit); err != nil {
+			return err
+		}
+	}
 	if len(f.buf) > 0 || len(f.raw) > 0 {
 		return errSSEMalformed
 	}
 	return nil
 }
 
+// nextLineBreak returns the index and byte width of the first line break in
+// buf. A CR that is the final byte is deferred (returns -1) because the next
+// read may complete a CRLF; finish flushes it at EOF.
+func nextLineBreak(buf []byte) (int, int) {
+	for i := 0; i < len(buf); i++ {
+		switch buf[i] {
+		case '\n':
+			return i, 1
+		case '\r':
+			if i+1 == len(buf) {
+				return -1, 0
+			}
+			if buf[i+1] == '\n' {
+				return i, 2
+			}
+			return i, 1
+		}
+	}
+	return -1, 0
+}
+
+// stripBOM removes exactly one leading UTF-8 BOM. It keeps the framer waiting
+// while the buffered prefix could still be the start of a BOM, so a BOM split
+// across reads or fed one byte at a time is still stripped once, and only at the
+// stream start.
+func (f *sseEventFramer) stripBOM() {
+	if f.started || len(f.buf) == 0 {
+		return
+	}
+	bom := []byte{0xef, 0xbb, 0xbf}
+	n := len(f.buf)
+	if n > len(bom) {
+		n = len(bom)
+	}
+	if !bytes.Equal(f.buf[:n], bom[:n]) {
+		f.started = true
+		return
+	}
+	if n < len(bom) {
+		return
+	}
+	f.buf = f.buf[len(bom):]
+	f.started = true
+}
+
 // line consumes one physical line including its delimiter. The raw bytes are
 // always retained; only "data" fields contribute to the joined payload.
-func (f *sseEventFramer) line(physical []byte, emit func(sseEvent) bool) error {
+func (f *sseEventFramer) line(physical []byte, width int, emit func(sseEvent) bool) error {
 	f.raw = append(f.raw, physical...)
 	if len(f.raw) > maxSSEEventBytes {
 		return errSSEMalformed
 	}
-	content := trimCR(physical[:len(physical)-1])
+	content := physical[:len(physical)-width]
 	if len(content) == 0 {
 		return f.dispatch(emit)
 	}
@@ -128,13 +184,6 @@ func (f *sseEventFramer) dispatch(emit func(sseEvent) bool) error {
 		return errEmitStopped
 	}
 	return nil
-}
-
-func trimCR(line []byte) []byte {
-	if len(line) > 0 && line[len(line)-1] == '\r' {
-		return line[:len(line)-1]
-	}
-	return line
 }
 
 // isSSEDone reports whether a data payload is the terminal chat sentinel.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 // activeCount reports how many downstream streams are currently registered.
@@ -365,5 +366,61 @@ func TestActiveReconfigureDoesNotInterruptStream(t *testing.T) {
 	}
 	if got := len(host.emitted("down-active")); got != 1 {
 		t.Fatalf("expected 1 emitted frame, got %d", got)
+	}
+}
+
+// TestQuiesceInterruptsPartialStreamWithError verifies that the first close the
+// host observes for a partially delivered stream broken by quiesce carries the
+// fixed interruption error, never a fake clean EOF. The setup synchronizes on
+// the delivered frame and leaves the upstream open, so no sleep decides the
+// close ordering.
+func TestQuiesceInterruptsPartialStreamWithError(t *testing.T) {
+	host := newFakeHost()
+	_, ch := host.openStream()
+	manager := configuredManager(t, host, "")
+	startStreamWithID(t, manager, "down-partial")
+
+	ch <- []byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+	select {
+	case <-host.emitCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("partial frame was not emitted downstream")
+	}
+
+	decodeResult(t, lifecycleCall(t, manager, pluginabi.MethodPluginQuiesce, ""), nil)
+	if !waitForClose(t, host, 2*time.Second) {
+		t.Fatal("downstream stream was not closed")
+	}
+	manager.shutdown()
+
+	closes := host.closes()
+	if len(closes) == 0 || closes[0].Error == "" {
+		t.Fatalf("first close must carry the interruption error: %+v", closes)
+	}
+}
+
+// TestStreamWorkerStopClosesWithInterruptError drives the worker's own stop path
+// directly: when the captured run closes before a frame is emitted, the worker
+// must close with the fixed interruption error instead of the clean-EOF default.
+func TestStreamWorkerStopClosesWithInterruptError(t *testing.T) {
+	host := newFakeHost()
+	upID := host.queueStream([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n"))
+	manager := newTestManager(host)
+	run, ok := manager.beginRun()
+	if !ok {
+		t.Fatal("beginRun rejected an open manager")
+	}
+	if !manager.registerStream(run, "down-stop", upID) {
+		t.Fatal("registerStream rejected the open run")
+	}
+	close(run)
+
+	req := rpcExecutorRequest{ExecutorRequest: baseExecRequest(), StreamID: "down-stop"}
+	plan := &prepared{run: run, wire: translator.FormatOpenAI, clientResp: translator.FormatOpenAI}
+	manager.pumpStream(req, plan, upID)
+
+	closes := host.closes()
+	if len(closes) == 0 || closes[0].Error != streamInterruptedMessage {
+		t.Fatalf("stopped worker must close with %q: %+v", streamInterruptedMessage, closes)
 	}
 }

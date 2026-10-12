@@ -265,3 +265,90 @@ func TestExecuteRejectsEmptyNonStreamTranslation(t *testing.T) {
 		t.Fatalf("empty conversion must fail closed, got %+v", envErr)
 	}
 }
+
+// TestResponsesFailureStatusToChatFailsClosed verifies a cross-protocol Responses
+// body whose status proves the generation did not complete becomes a sanitized
+// 502 for Chat and Claude clients instead of a fabricated chat completion. The
+// original error text must never leak through.
+func TestResponsesFailureStatusToChatFailsClosed(t *testing.T) {
+	for _, status := range []string{"failed", "cancelled", "in_progress", "queued"} {
+		for _, client := range []string{"openai", "claude"} {
+			t.Run(status+"/"+client, func(t *testing.T) {
+				body := `{"id":"resp_f","object":"response","model":"gpt-5.6","status":"` + status +
+					`","error":{"code":"server_error","message":"leaked sk-fake-secret"},"output":[]}`
+				host := newFakeHost()
+				host.httpResponses[responsesURL] = pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(body)}
+				manager := configuredManager(t, host, "")
+				req := baseExecRequest()
+				req.Model = "opencode-go/gpt-5.6"
+				req.Format = client
+				req.SourceFormat = client
+				req.Payload = []byte(`{"model":"opencode-go/gpt-5.6","messages":[{"role":"user","content":"hi"}]}`)
+				req.OriginalRequest = req.Payload
+				raw, err := manager.HandleCall(pluginabi.MethodExecutorExecute, execBytes(t, req, ""))
+				if err != nil {
+					t.Fatalf("execute: %v", err)
+				}
+				envErr := decodeError(t, raw)
+				if envErr.StatusCode() != http.StatusBadGateway {
+					t.Fatalf("status %q must fail closed, got %+v", status, envErr)
+				}
+				if strings.Contains(envErr.Message, "leaked") || strings.Contains(envErr.Message, "sk-fake") {
+					t.Fatalf("upstream error text leaked: %q", envErr.Message)
+				}
+			})
+		}
+	}
+}
+
+// TestResponsesNativePassthroughKeepsFailureBody verifies a same-protocol
+// Responses client keeps the upstream 200 body byte-for-byte, including a
+// status:failed object, so the sanitizer only affects the cross-protocol path.
+func TestResponsesNativePassthroughKeepsFailureBody(t *testing.T) {
+	failedJSON := `{"id":"resp_f","object":"response","model":"gpt-5.6","status":"failed","error":{"code":"server_error","message":"synthetic"},"output":[]}`
+	host := newFakeHost()
+	host.httpResponses[responsesURL] = pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(failedJSON)}
+	req := baseExecRequest()
+	req.Model = "opencode-go/gpt-5.6"
+	req.Format = "openai-response"
+	req.SourceFormat = "openai-response"
+	req.Payload = []byte(`{"model":"opencode-go/gpt-5.6","input":[{"role":"user","content":"hi"}]}`)
+	req.OriginalRequest = req.Payload
+	resp := executeNonStream(t, host, req)
+	if string(resp.Payload) != failedJSON {
+		t.Fatalf("native failure body must pass through unchanged:\n got %s\nwant %s", resp.Payload, failedJSON)
+	}
+}
+
+// TestResponsesIncompleteStatusConverts verifies an incomplete terminal remains
+// a success on the cross-protocol path rather than being misclassified as a
+// failure, preserving the historical completed/incomplete compatibility.
+func TestResponsesIncompleteStatusConverts(t *testing.T) {
+	incompleteJSON := `{"id":"resp_i","object":"response","model":"gpt-5.6","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`
+	host := newFakeHost()
+	host.httpResponses[responsesURL] = pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(incompleteJSON)}
+	req := baseExecRequest()
+	req.Model = "opencode-go/gpt-5.6"
+	req.Payload = []byte(`{"model":"opencode-go/gpt-5.6","messages":[{"role":"user","content":"hi"}]}`)
+	req.OriginalRequest = req.Payload
+	resp := executeNonStream(t, host, req)
+	if !strings.Contains(string(resp.Payload), `"choices"`) || !strings.Contains(string(resp.Payload), "partial") {
+		t.Fatalf("incomplete reply must convert to chat: %s", resp.Payload)
+	}
+}
+
+// TestResponsesMissingStatusStillConverts verifies a historically status-less
+// Responses body keeps converting to a normal completion.
+func TestResponsesMissingStatusStillConverts(t *testing.T) {
+	noStatus := `{"id":"resp_ns","object":"response","model":"gpt-5.6","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+	host := newFakeHost()
+	host.httpResponses[responsesURL] = pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(noStatus)}
+	req := baseExecRequest()
+	req.Model = "opencode-go/gpt-5.6"
+	req.Payload = []byte(`{"model":"opencode-go/gpt-5.6","messages":[{"role":"user","content":"hi"}]}`)
+	req.OriginalRequest = req.Payload
+	resp := executeNonStream(t, host, req)
+	if !strings.Contains(string(resp.Payload), `"choices"`) {
+		t.Fatalf("status-less reply must convert to chat: %s", resp.Payload)
+	}
+}

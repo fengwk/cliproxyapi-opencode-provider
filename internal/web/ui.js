@@ -381,6 +381,27 @@ function normalizeFileEntries(files) {
   return rows;
 }
 
+// Fixed local message for an untrusted or malformed keys-list body. Raw server
+// text (which could carry key material) is never surfaced.
+var KEYS_LIST_ERROR = "密钥列表响应无效，请确认 CPA 与插件版本匹配。";
+
+// parseKeysListBody strictly reads a keys-list HTTP 200 body. Only a plain
+// object carrying a files array is accepted; invalid JSON, {}, an error body or
+// a non-array files field is rejected so the caller reports an error instead of
+// claiming an empty catalog. A valid empty array is a genuine empty list.
+function parseKeysListBody(text) {
+  var payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (err) {
+    return { ok: false, error: KEYS_LIST_ERROR, rows: [] };
+  }
+  if (!isPlainObject(payload) || !Array.isArray(payload.files)) {
+    return { ok: false, error: KEYS_LIST_ERROR, rows: [] };
+  }
+  return { ok: true, error: null, rows: normalizeFileEntries(payload.files) };
+}
+
 // Local, fixed messages only: untrusted server strings are never surfaced.
 function describeHttpFailure(status) {
   if (status === 400) {
@@ -666,6 +687,8 @@ var api = {
   formatQuotaReset: formatQuotaReset,
   parseQuotaResponse: parseQuotaResponse,
   normalizeFileEntries: normalizeFileEntries,
+  parseKeysListBody: parseKeysListBody,
+  KEYS_LIST_ERROR: KEYS_LIST_ERROR,
   describeHttpFailure: describeHttpFailure,
   describeQuotaFailure: describeQuotaFailure,
   countNotice: countNotice,
@@ -1529,15 +1552,20 @@ function initUi() {
           setStatus(describeHttpFailure(response.status), "error");
           return null;
         }
-        return readJson(response);
+        return response.text().then(parseKeysListBody);
       })
-      .then(function (payload) {
-        if (!payload) {
+      .then(function (result) {
+        if (!result) {
           return;
         }
-        var rows = normalizeFileEntries(isPlainObject(payload) ? payload.files : []);
-        renderFiles(rows);
-        setStatus(rows.length ? "已加载 " + rows.length + " 条密钥。" : "列表为空，暂无已托管的密钥。", "ok");
+        if (!result.ok) {
+          // A malformed or unrecognized 200 must not be shown as an empty
+          // catalog: report a fixed local error and keep the previous list.
+          setStatus(result.error, "error");
+          return;
+        }
+        renderFiles(result.rows);
+        setStatus(result.rows.length ? "已加载 " + result.rows.length + " 条密钥。" : "列表为空，暂无已托管的密钥。", "ok");
       })
       .catch(function () {
         setStatus("无法连接 CPA 管理接口，请确认地址与网络。", "error");

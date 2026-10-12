@@ -151,6 +151,41 @@ test("normalizeFileEntries renders hostile content as inert text and flags unsaf
   assert.equal(rows[3].failed, 1);
 });
 
+test("parseKeysListBody rejects malformed or unrecognized keys-list bodies", () => {
+  // Invalid JSON, a bare {}, an error body and a non-array files field must all
+  // be errors, never an empty catalog; the message is fixed and local.
+  for (const text of [
+    "NOT_JSON_BODY_200{",
+    "{}",
+    '{"error":"failed"}',
+    '{"files":false}',
+    "null",
+    "[]",
+    '{"files":{"0":"x"}}'
+  ]) {
+    const result = ui.parseKeysListBody(text);
+    assert.equal(result.ok, false, "body must be rejected: " + text);
+    assert.equal(result.error, ui.KEYS_LIST_ERROR);
+    assert.deepEqual(result.rows, []);
+  }
+  // Raw key material from a broken body never appears in the fixed error.
+  const leaked = ui.parseKeysListBody('{"files":[{"name":"sk-fake-secret"');
+  assert.equal(leaked.ok, false);
+  assert.equal(leaked.error.includes("sk-fake-secret"), false);
+});
+
+test("parseKeysListBody accepts a genuine empty and non-empty list", () => {
+  const empty = ui.parseKeysListBody('{"files":[]}');
+  assert.equal(empty.ok, true);
+  assert.equal(empty.error, null);
+  assert.deepEqual(empty.rows, []);
+
+  const filled = ui.parseKeysListBody('{"files":[{"name":"opencode-go-1.json","auth_index":"idx-1"}]}');
+  assert.equal(filled.ok, true);
+  assert.equal(filled.rows.length, 1);
+  assert.equal(filled.rows[0].rawName, "opencode-go-1.json");
+});
+
 test("isSafeFileName and toCellText guard delete input", () => {
   assert.equal(ui.isSafeFileName("opencode-go-1.json"), true);
   assert.equal(ui.isSafeFileName("  spaced name.json  "), true);
@@ -1359,4 +1394,94 @@ test("createSelectController mirrors the native select without extra changes", (
   controller.refresh();
   assert.equal(body.children.some((child) => child.className === "cpa-select-menu"), false);
   assert.equal(doc.listeners.mousedown, undefined);
+});
+
+// Boot the real ui.js against the fake DOM with raw keys-list bodies. The
+// /settings request (manual-model reload) always succeeds; the keys route
+// returns each scripted text in order, so a bad refresh can be observed after a
+// good one. The scripted bodies are never JSON.stringify-ed, so an invalid JSON
+// body is exercised exactly as a broken HTTP 200 would arrive.
+async function mountKeysUi(listTexts) {
+  const dom = createQuotaDom();
+  const requests = [];
+  let listIndex = 0;
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    if (url.endsWith("/settings")) {
+      return { status: 200, ok: true, text: async () => JSON.stringify({ "manual-models": [] }) };
+    }
+    const text = listTexts[Math.min(listIndex, listTexts.length - 1)];
+    listIndex += 1;
+    return { status: 200, ok: true, text: async () => text };
+  };
+  vm.runInNewContext(readAsset("ui.js"), {
+    document: dom.document,
+    window: {
+      location: {
+        protocol: "http:", hostname: "127.0.0.1",
+        pathname: "/v0/resource/plugins/cliproxyapi-opencode-provider/ui"
+      },
+      confirm: () => true,
+      setTimeout,
+      clearTimeout
+    },
+    AbortController,
+    TextEncoder,
+    fetch: fetchImpl
+  });
+  const get = (id) => dom.document.getElementById(id);
+  const settle = async () => {
+    for (let i = 0; i < 30 && get("reload-btn").disabled; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  get("mgmt-key").value = "fake-management-key";
+  get("auth-form").handlers.submit({ preventDefault() {} });
+  await settle();
+  return { get, requests, settle };
+}
+
+test("a broken keys list reports a fixed error and never claims an empty catalog", async () => {
+  for (const text of ["NOT_JSON_BODY_200{", "{}", '{"error":"failed"}', '{"files":false}']) {
+    const { get } = await mountKeysUi([text]);
+    const status = get("status");
+    assert.equal(status.textContent, ui.KEYS_LIST_ERROR, "body must be an error: " + text);
+    assert.match(status.className, /\berror\b/, "status must use the error level: " + text);
+    assert.equal(status.textContent.includes("列表为空"), false, "must not claim an empty list: " + text);
+    assert.equal(get("summary").textContent.includes("共 0 条"), false, "must not summarize as 共 0 条: " + text);
+    assert.equal(get("files-body").children.length, 0, "no rows may be rendered: " + text);
+  }
+});
+
+test("a genuine empty keys list is still an empty catalog", async () => {
+  const { get } = await mountKeysUi(['{"files":[]}']);
+  assert.match(get("status").textContent, /列表为空/);
+  assert.match(get("status").className, /\bok\b/);
+  assert.match(get("summary").textContent, /共 0 条/);
+  assert.equal(get("files-body").children.length, 1, "one placeholder row");
+});
+
+test("a valid non-empty keys list renders exactly its rows", async () => {
+  const { get } = await mountKeysUi(['{"files":[{"name":"opencode-go-1.json","auth_index":"idx-1"}]}']);
+  assert.match(get("status").textContent, /已加载 1 条密钥/);
+  assert.match(get("status").className, /\bok\b/);
+  assert.match(get("summary").textContent, /共 1 条/);
+  assert.equal(get("files-body").children.length, 1);
+});
+
+test("a broken refresh keeps the previously rendered list", async () => {
+  const { get, settle } = await mountKeysUi([
+    '{"files":[{"name":"opencode-go-1.json","auth_index":"idx-1"}]}',
+    "NOT_JSON_BODY_200{"
+  ]);
+  assert.equal(get("files-body").children.length, 1);
+  assert.match(get("status").textContent, /已加载 1 条密钥/);
+
+  get("reload-btn").handlers.click({});
+  await settle();
+
+  assert.equal(get("status").textContent, ui.KEYS_LIST_ERROR);
+  assert.match(get("status").className, /\berror\b/);
+  assert.equal(get("files-body").children.length, 1, "the old list must survive a broken refresh");
+  assert.equal(get("summary").textContent.includes("共 0 条"), false);
 });

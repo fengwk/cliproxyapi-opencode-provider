@@ -260,6 +260,27 @@ func injectPromptCacheKey(body []byte, sdk translator.Format, scope string) []by
 	return updated
 }
 
+// responsesTerminalError rejects an ordinary Responses body that proves the
+// generation did not finish before it reaches the cross-protocol converter.
+// Only the two terminal statuses, or a historically status-less sample, may be
+// treated as complete; a failed, cancelled or non-terminal status becomes a
+// sanitized 502 instead of a fabricated response.completed success.
+func responsesTerminalError(native []byte) *ProviderError {
+	status := gjson.GetBytes(native, "status")
+	if !status.Exists() || status.Type == gjson.Null {
+		return nil
+	}
+	switch status.String() {
+	case "", "completed", "incomplete":
+		return nil
+	}
+	return &ProviderError{
+		Code:       "upstream_error",
+		Message:    "upstream response did not complete",
+		HTTPStatus: http.StatusBadGateway,
+	}
+}
+
 // wrapCodexTerminal wraps an ordinary Responses JSON body into the minimal
 // terminal event envelope expected by the SDK's Codex non-stream converters.
 func wrapCodexTerminal(native []byte) []byte {
@@ -327,6 +348,9 @@ func (m *Manager) execute(req rpcExecutorRequest) (pluginapi.ExecutorResponse, e
 	if plan.clientResp != plan.wire {
 		converted := resp.Body
 		if plan.sdk == translator.FormatCodex {
+			if errTerminal := responsesTerminalError(resp.Body); errTerminal != nil {
+				return pluginapi.ExecutorResponse{}, errTerminal
+			}
 			converted = wrapCodexTerminal(resp.Body)
 		}
 		var param any
@@ -391,7 +415,17 @@ func (m *Manager) pumpStream(req rpcExecutorRequest, plan *prepared, upstreamStr
 		closed = true
 		m.bridge.StreamClose(req.StreamID, errMessage)
 	}
-	defer closeDown("")
+	// A worker that stops because the captured run closed or the downstream emit
+	// failed must not fall through to the clean-EOF close: that would report a
+	// false success before the lifecycle interruption error can be observed.
+	interrupted := false
+	defer func() {
+		if interrupted {
+			closeDown(streamInterruptedMessage)
+			return
+		}
+		closeDown("")
+	}()
 	defer func() {
 		if recover() != nil {
 			closeDown("stream processing failed")
@@ -406,10 +440,15 @@ func (m *Manager) pumpStream(req rpcExecutorRequest, plan *prepared, upstreamStr
 		// manager's current run, so a reopened manager cannot revive this worker.
 		select {
 		case <-plan.run:
+			interrupted = true
 			return false
 		default:
 		}
-		return m.bridge.StreamEmit(req.StreamID, payload) == nil
+		if m.bridge.StreamEmit(req.StreamID, payload) != nil {
+			interrupted = true
+			return false
+		}
+		return true
 	}
 
 	if plan.clientResp == plan.wire {
@@ -427,6 +466,30 @@ func (m *Manager) pumpStream(req rpcExecutorRequest, plan *prepared, upstreamStr
 // handler re-appends, and emits one bare JSON object per event.
 func (m *Manager) pumpChatPassthrough(wire translator.Format, upstreamStreamID string, emit func([]byte) bool, closeDown func(string)) {
 	completed := false
+	sawError := false
+	malformed := false
+	handle := func(event sseEvent) bool {
+		data := event.Data
+		if len(data) == 0 {
+			return true
+		}
+		signal, isMalformed := classifyNativeEvent(wire, data)
+		switch signal {
+		case signalError:
+			if isMalformed {
+				malformed = true
+			} else {
+				sawError = true
+			}
+			return false
+		case signalDone:
+			completed = true
+			return true
+		case signalTerminal:
+			completed = true
+		}
+		return emit(data)
+	}
 	var framer sseEventFramer
 	for {
 		chunk, errRead := m.bridge.HTTPStreamRead(upstreamStreamID)
@@ -439,30 +502,9 @@ func (m *Manager) pumpChatPassthrough(wire translator.Format, upstreamStreamID s
 			return
 		}
 		if len(chunk.Payload) > 0 {
-			sawError := false
-			malformed := false
-			pushErr := framer.push(chunk.Payload, func(event sseEvent) bool {
-				data := event.Data
-				if len(data) == 0 {
-					return true
-				}
-				signal, isMalformed := classifyNativeEvent(wire, data)
-				switch signal {
-				case signalError:
-					if isMalformed {
-						malformed = true
-					} else {
-						sawError = true
-					}
-					return false
-				case signalDone:
-					completed = true
-					return true
-				case signalTerminal:
-					completed = true
-				}
-				return emit(data)
-			})
+			sawError = false
+			malformed = false
+			pushErr := framer.push(chunk.Payload, handle)
 			if malformed {
 				closeDown("malformed upstream stream")
 				return
@@ -483,7 +525,18 @@ func (m *Manager) pumpChatPassthrough(wire translator.Format, upstreamStreamID s
 			break
 		}
 	}
-	if errFinish := framer.finish(); errFinish != nil {
+	if errFinish := framer.finish(handle); errFinish != nil {
+		if malformed {
+			closeDown("malformed upstream stream")
+			return
+		}
+		if sawError {
+			closeDown("upstream stream error")
+			return
+		}
+		if errors.Is(errFinish, errEmitStopped) {
+			return
+		}
 		closeDown("truncated upstream stream")
 		return
 	}
@@ -499,6 +552,23 @@ func (m *Manager) pumpChatPassthrough(wire translator.Format, upstreamStreamID s
 // frame downstream.
 func (m *Manager) pumpRawPassthrough(wire translator.Format, upstreamStreamID string, emit func([]byte) bool, closeDown func(string)) {
 	completed := false
+	sawError := false
+	malformed := false
+	handle := func(event sseEvent) bool {
+		signal, isMalformed := classifyNativeEvent(wire, event.Data)
+		switch signal {
+		case signalError:
+			if isMalformed {
+				malformed = true
+			} else {
+				sawError = true
+			}
+			return false
+		case signalDone, signalTerminal:
+			completed = true
+		}
+		return emit(event.Raw)
+	}
 	var framer sseEventFramer
 	for {
 		chunk, errRead := m.bridge.HTTPStreamRead(upstreamStreamID)
@@ -511,23 +581,9 @@ func (m *Manager) pumpRawPassthrough(wire translator.Format, upstreamStreamID st
 			return
 		}
 		if len(chunk.Payload) > 0 {
-			sawError := false
-			malformed := false
-			pushErr := framer.push(chunk.Payload, func(event sseEvent) bool {
-				signal, isMalformed := classifyNativeEvent(wire, event.Data)
-				switch signal {
-				case signalError:
-					if isMalformed {
-						malformed = true
-					} else {
-						sawError = true
-					}
-					return false
-				case signalDone, signalTerminal:
-					completed = true
-				}
-				return emit(event.Raw)
-			})
+			sawError = false
+			malformed = false
+			pushErr := framer.push(chunk.Payload, handle)
 			if malformed {
 				closeDown("malformed upstream stream")
 				return
@@ -548,7 +604,18 @@ func (m *Manager) pumpRawPassthrough(wire translator.Format, upstreamStreamID st
 			break
 		}
 	}
-	if errFinish := framer.finish(); errFinish != nil {
+	if errFinish := framer.finish(handle); errFinish != nil {
+		if malformed {
+			closeDown("malformed upstream stream")
+			return
+		}
+		if sawError {
+			closeDown("upstream stream error")
+			return
+		}
+		if errors.Is(errFinish, errEmitStopped) {
+			return
+		}
 		closeDown("truncated upstream stream")
 		return
 	}
@@ -578,6 +645,34 @@ func (m *Manager) pumpTranslated(req rpcExecutorRequest, plan *prepared, upstrea
 		return true
 	}
 	completed := false
+	doneSeen := false
+	sawError := false
+	malformed := false
+	handle := func(event sseEvent) bool {
+		data := event.Data
+		if len(data) == 0 {
+			return true
+		}
+		signal, isMalformed := classifyNativeEvent(plan.wire, data)
+		switch signal {
+		case signalError:
+			if isMalformed {
+				malformed = true
+			} else {
+				sawError = true
+			}
+			return false
+		case signalDone:
+			// Feed the real sentinel so the SDK can flush the terminal event and
+			// late usage instead of synthesizing success.
+			completed = true
+			doneSeen = true
+			return feed(data)
+		case signalTerminal:
+			completed = true
+		}
+		return feed(data)
+	}
 	var framer sseEventFramer
 	for {
 		chunk, errRead := m.bridge.HTTPStreamRead(upstreamStreamID)
@@ -590,32 +685,9 @@ func (m *Manager) pumpTranslated(req rpcExecutorRequest, plan *prepared, upstrea
 			return
 		}
 		if len(chunk.Payload) > 0 {
-			sawError := false
-			malformed := false
-			pushErr := framer.push(chunk.Payload, func(event sseEvent) bool {
-				data := event.Data
-				if len(data) == 0 {
-					return true
-				}
-				signal, isMalformed := classifyNativeEvent(plan.wire, data)
-				switch signal {
-				case signalError:
-					if isMalformed {
-						malformed = true
-					} else {
-						sawError = true
-					}
-					return false
-				case signalDone:
-					// Feed the real sentinel so the SDK can flush the terminal
-					// event and late usage instead of synthesizing success.
-					completed = true
-					return feed(data)
-				case signalTerminal:
-					completed = true
-				}
-				return feed(data)
-			})
+			sawError = false
+			malformed = false
+			pushErr := framer.push(chunk.Payload, handle)
 			if malformed {
 				closeDown("malformed upstream stream")
 				return
@@ -636,12 +708,32 @@ func (m *Manager) pumpTranslated(req rpcExecutorRequest, plan *prepared, upstrea
 			break
 		}
 	}
-	if errFinish := framer.finish(); errFinish != nil {
+	if errFinish := framer.finish(handle); errFinish != nil {
+		if malformed {
+			closeDown("malformed upstream stream")
+			return
+		}
+		if sawError {
+			closeDown("upstream stream error")
+			return
+		}
+		if errors.Is(errFinish, errEmitStopped) {
+			return
+		}
 		closeDown("truncated upstream stream")
 		return
 	}
 	if !completed {
 		closeDown("upstream stream ended before completion")
+		return
+	}
+	// A Chat upstream proved completion with a genuine non-empty finish_reason
+	// and ended at a clean event boundary but omitted the sentinel. Give the SDK
+	// exactly one equivalent [DONE] so it flushes the terminal event and late
+	// usage; a real [DONE] is never re-sent, and a missing terminal, half frame
+	// or read error never reaches here.
+	if plan.wire == translator.FormatOpenAI && !doneSeen {
+		feed([]byte("[DONE]"))
 	}
 }
 
@@ -657,8 +749,8 @@ const (
 
 // classifyNativeEvent inspects a joined SSE data payload and reports whether it
 // is a native terminal signal, the chat sentinel, or a native error. The second
-// result is true when the payload was not valid JSON at all, which is treated
-// as a malformed event so junk never flows downstream as success.
+// result is true when the payload is not a JSON object, which is treated as a
+// malformed event so junk never flows downstream as success.
 func classifyNativeEvent(wire translator.Format, data []byte) (streamSignal, bool) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
@@ -670,7 +762,7 @@ func classifyNativeEvent(wire translator.Format, data []byte) (streamSignal, boo
 		}
 		return signalNone, false
 	}
-	if !json.Valid(trimmed) {
+	if !json.Valid(trimmed) || !gjson.ParseBytes(trimmed).IsObject() {
 		return signalError, true
 	}
 	switch wire {
@@ -698,8 +790,10 @@ func classifyNativeEvent(wire translator.Format, data []byte) (streamSignal, boo
 		choices := gjson.GetBytes(trimmed, "choices")
 		if choices.IsArray() {
 			for _, choice := range choices.Array() {
+				// Only a genuine, non-empty finish_reason string proves the Chat
+				// generation completed; null or empty means it did not.
 				reason := choice.Get("finish_reason")
-				if reason.Exists() && reason.Type != gjson.Null {
+				if reason.Type == gjson.String && reason.String() != "" {
 					return signalTerminal, false
 				}
 			}

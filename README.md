@@ -248,6 +248,10 @@ U = hex(SHA256(JSON(["opencode-go-session-v1", auth.ID, S])))
 
 上游 401、429、5xx 通过标准 HTTP 状态交给 CPA 处理；插件不自行冷却或重试。
 流式事件按完整 SSE 帧处理，不把缺失原生结束事件的 EOF 伪装成成功。
+同协议 Chat 上游以有效 `finish_reason` 加干净 EOF 结束即视为成功（既有合约不变）。
+跨协议 Chat→Responses 时，若上游已用真实非空 `finish_reason` 证明完成、且 framer 已确认
+事件边界完整，但缺少 `[DONE]`，插件补投一次等价 `[DONE]` 刷新终态与用量；真实 `[DONE]`
+不重复刷新，缺少终态、残留半帧或读错误仍然失败。
 `count_tokens`、OAuth 登录和通用 `http_request` 不在本插件支持范围内。
 
 ## 验证与自动维护

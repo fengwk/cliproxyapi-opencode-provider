@@ -134,15 +134,22 @@ func (m *Manager) closeRunLocked() map[string]string {
 	return pairs
 }
 
+// streamInterruptedMessage is the fixed, sanitized terminal error reported when
+// a lifecycle operation (quiesce or shutdown) breaks an active stream before it
+// completed. It never carries upstream or client detail.
+const streamInterruptedMessage = "stream interrupted before completion"
+
 // closeStreams unblocks the upstream and downstream halves of a stream
-// snapshot. It never runs while lifeMu is held.
+// snapshot. It never runs while lifeMu is held. A lifecycle interruption must
+// not present as a clean EOF, so the downstream half is always closed with the
+// fixed interruption error; the idempotent worker close keeps the same message.
 func (m *Manager) closeStreams(pairs map[string]string) {
 	for downstream, upstream := range pairs {
 		if upstream != "" {
 			m.bridge.HTTPStreamClose(upstream)
 		}
 		if downstream != "" {
-			m.bridge.StreamClose(downstream, "")
+			m.bridge.StreamClose(downstream, streamInterruptedMessage)
 		}
 	}
 }

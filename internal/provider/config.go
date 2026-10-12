@@ -169,7 +169,7 @@ func validateBaseURL(raw string) (string, error) {
 	if parsed.User != nil {
 		return "", fmt.Errorf("base-url must not contain userinfo")
 	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return "", fmt.Errorf("base-url must not contain query or fragment")
 	}
 	if strings.TrimSpace(parsed.Host) == "" {

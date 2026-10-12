@@ -65,6 +65,7 @@ func TestRegisterRejectsUnsafeBaseURL(t *testing.T) {
 		"base-url: ftp://example.com/v1\n",
 		"base-url: https://user:pass@example.com/v1\n",
 		"base-url: https://example.com/v1?x=1\n",
+		"base-url: https://example.com/v1?\n",
 		"models:\n  - id: m\n    protocol: bogus\n",
 	}
 	for _, body := range cases {

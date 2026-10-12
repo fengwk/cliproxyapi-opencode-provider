@@ -132,3 +132,18 @@ func TestStreamNativeErrorTerminates(t *testing.T) {
 		t.Fatalf("host error text leaked: %q", errMsg)
 	}
 }
+
+// TestStreamRejectsNonObjectFrames verifies a legal JSON array, null or scalar
+// from the Chat upstream is rejected instead of being forwarded as a chunk.
+func TestStreamRejectsNonObjectFrames(t *testing.T) {
+	for _, frame := range []string{"[]", "null", "true", `"text"`, "123"} {
+		raw := "data: " + frame + "\n\ndata: [DONE]\n\n"
+		host := runChatStream(t, splitBytes([]byte(raw), 3)...)
+		if err := lastCloseError(host); err == "" {
+			t.Fatalf("frame %s must fail closed", frame)
+		}
+		if emitted := host.emitted("down-stream"); len(emitted) != 0 {
+			t.Fatalf("frame %s must not be emitted: %q", frame, emitted)
+		}
+	}
+}

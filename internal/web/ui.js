@@ -698,9 +698,580 @@ function normalizeManualModels(raw) {
   });
 }
 api.normalizeManualModels = normalizeManualModels;
+api.createSelectController = createSelectController;
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = api;
+}
+
+/* ------------------------------------------------------- dependency-free select */
+
+// One controller enhances every native select in the document. The native
+// control remains the value, option and change source; the body-level popup
+// only mirrors it. Call refresh() after options or disabled state change.
+function createSelectController(win, doc) {
+  var VIEWPORT_MARGIN = 8;
+  var DROPDOWN_OFFSET = 6;
+  var DROPDOWN_MAX_HEIGHT = 240;
+  var entries = [];
+  var active = null;
+  var outsideHandler = null;
+  var viewportHandler = null;
+  var parentViewportHandler = null;
+  var rafId = null;
+  var nextSerial = 1;
+
+  function isSelect(node) {
+    return !!(node && node.tagName === "SELECT" && node.ownerDocument === doc);
+  }
+
+  function sourceId(select) {
+    if (!select.id) {
+      select.id = "cpa-select-" + nextSerial;
+      nextSerial += 1;
+    }
+    return select.id;
+  }
+
+  function findEntry(select) {
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].select === select) {
+        return entries[i];
+      }
+    }
+    return null;
+  }
+
+  function optionDisabled(option) {
+    if (!option || option.disabled) {
+      return true;
+    }
+    var parent = option.parentNode;
+    return !!(parent && parent.tagName === "OPTGROUP" && parent.disabled);
+  }
+
+  function enabledIndexes(select) {
+    var indexes = [];
+    for (var i = 0; i < select.options.length; i++) {
+      if (!optionDisabled(select.options[i])) {
+        indexes.push(i);
+      }
+    }
+    return indexes;
+  }
+
+  function stepIndex(select, from, direction) {
+    var indexes = enabledIndexes(select);
+    if (!indexes.length) {
+      return -1;
+    }
+    var position = indexes.indexOf(from);
+    if (position < 0) {
+      return direction < 0 ? indexes[indexes.length - 1] : indexes[0];
+    }
+    return indexes[(position + direction + indexes.length) % indexes.length];
+  }
+
+  function firstEnabled(select) {
+    var indexes = enabledIndexes(select);
+    return indexes.length ? indexes[0] : -1;
+  }
+
+  function lastEnabled(select) {
+    var indexes = enabledIndexes(select);
+    return indexes.length ? indexes[indexes.length - 1] : -1;
+  }
+
+  function labelFor(select) {
+    var labelledBy = select.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      return { labelledBy: labelledBy, label: null };
+    }
+    var labels = typeof select.labels !== "undefined" ? select.labels : null;
+    if (labels && labels.length) {
+      var ids = [];
+      for (var i = 0; i < labels.length; i++) {
+        if (!labels[i].id) {
+          labels[i].id = sourceId(select) + "-label-" + i;
+        }
+        ids.push(labels[i].id);
+      }
+      return { labelledBy: ids.join(" "), label: null };
+    }
+    var aria = select.getAttribute("aria-label");
+    return { labelledBy: null, label: aria || null };
+  }
+
+  function selectedText(select) {
+    var option = select.options[select.selectedIndex];
+    if (!option) {
+      return "";
+    }
+    return option.textContent || option.label || "";
+  }
+
+  function syncTrigger(entry) {
+    var select = entry.select;
+    var text = selectedText(select);
+    entry.text.textContent = text;
+    entry.trigger.title = text;
+    entry.trigger.disabled = !!select.disabled;
+    entry.trigger.setAttribute("aria-expanded", entry.open ? "true" : "false");
+    if (entry.open) {
+      entry.trigger.setAttribute("aria-controls", entry.listId);
+    } else {
+      entry.trigger.removeAttribute("aria-controls");
+      entry.trigger.removeAttribute("aria-activedescendant");
+    }
+    var describedBy = select.getAttribute("aria-describedby");
+    if (describedBy) {
+      entry.trigger.setAttribute("aria-describedby", describedBy);
+    } else {
+      entry.trigger.removeAttribute("aria-describedby");
+    }
+    var invalid = select.getAttribute("aria-invalid");
+    if (invalid) {
+      entry.trigger.setAttribute("aria-invalid", invalid);
+    } else {
+      entry.trigger.removeAttribute("aria-invalid");
+    }
+    var naming = labelFor(select);
+    if (naming.labelledBy) {
+      entry.trigger.setAttribute("aria-labelledby", naming.labelledBy);
+      entry.trigger.removeAttribute("aria-label");
+    } else if (naming.label) {
+      entry.trigger.setAttribute("aria-label", naming.label);
+      entry.trigger.removeAttribute("aria-labelledby");
+    }
+    entry.text.className = "cpa-select-text";
+    var small = select.classList && select.classList.contains("cpa-select-sm");
+    entry.trigger.className = "btn cpa-select-trigger" + (small ? " cpa-select-sm" : "");
+  }
+
+  function closeActive(restoreFocus) {
+    if (!active) {
+      return;
+    }
+    var entry = active;
+    entry.open = false;
+    entry.highlight = -1;
+    active = null;
+    if (entry.menu && entry.menu.parentNode) {
+      entry.menu.parentNode.removeChild(entry.menu);
+    }
+    entry.menu = null;
+    syncTrigger(entry);
+    detachGlobal();
+    if (restoreFocus && entry.trigger && typeof entry.trigger.focus === "function") {
+      entry.trigger.focus();
+    }
+  }
+
+  function viewportBox() {
+    var width = win.innerWidth || 0;
+    var height = win.innerHeight || 0;
+    var top = 0;
+    var left = 0;
+    var frame = win.frameElement;
+    try {
+      if (frame && frame.getBoundingClientRect && win.parent && win.parent !== win) {
+        var frameRect = frame.getBoundingClientRect();
+        var parentWidth = win.parent.innerWidth || width;
+        var parentHeight = win.parent.innerHeight || height;
+        var visibleLeft = Math.max(frameRect.left, 0);
+        var visibleTop = Math.max(frameRect.top, 0);
+        var visibleRight = Math.min(frameRect.right, parentWidth);
+        var visibleBottom = Math.min(frameRect.bottom, parentHeight);
+        left = visibleLeft - frameRect.left;
+        top = visibleTop - frameRect.top;
+        width = Math.max(0, visibleRight - visibleLeft);
+        height = Math.max(0, visibleBottom - visibleTop);
+      }
+    } catch (err) {
+      width = win.innerWidth || 0;
+      height = win.innerHeight || 0;
+      top = 0;
+      left = 0;
+    }
+    return { top: top, left: left, width: width, height: height };
+  }
+
+  function positionMenu(entry) {
+    if (!entry.menu || !entry.trigger || !entry.trigger.getBoundingClientRect) {
+      return;
+    }
+    var rect = entry.trigger.getBoundingClientRect();
+    var viewport = viewportBox();
+    var viewportWidth = viewport.width;
+    var viewportHeight = viewport.height;
+    var relativeTop = rect.top - viewport.top;
+    var relativeBottom = rect.bottom - viewport.top;
+    var relativeLeft = rect.left - viewport.left;
+    var width = Math.min(rect.width, Math.max(0, viewportWidth - VIEWPORT_MARGIN * 2));
+    var maxLeft = Math.max(VIEWPORT_MARGIN, viewportWidth - width - VIEWPORT_MARGIN);
+    if (relativeLeft < VIEWPORT_MARGIN) {
+      relativeLeft = VIEWPORT_MARGIN;
+    } else if (relativeLeft > maxLeft) {
+      relativeLeft = maxLeft;
+    }
+    var spaceBelow = viewportHeight - relativeBottom - VIEWPORT_MARGIN - DROPDOWN_OFFSET;
+    var spaceAbove = relativeTop - VIEWPORT_MARGIN - DROPDOWN_OFFSET;
+    var openDown = spaceBelow >= DROPDOWN_MAX_HEIGHT || spaceBelow >= spaceAbove;
+    var maxHeight = Math.max(0, Math.min(DROPDOWN_MAX_HEIGHT, openDown ? spaceBelow : spaceAbove));
+    entry.menu.style.position = "fixed";
+    entry.menu.style.width = width + "px";
+    entry.menu.style.left = (viewport.left + relativeLeft) + "px";
+    entry.menu.style.maxHeight = maxHeight + "px";
+    if (openDown) {
+      entry.menu.style.top = (viewport.top + relativeBottom + DROPDOWN_OFFSET) + "px";
+      entry.menu.style.bottom = "auto";
+    } else {
+      entry.menu.style.top = "auto";
+      entry.menu.style.bottom = ((win.innerHeight || 0) - (viewport.top + relativeTop) + DROPDOWN_OFFSET) + "px";
+    }
+  }
+
+  function paintOptions(entry) {
+    var naming = labelFor(entry.select);
+    if (naming.label) {
+      entry.menu.setAttribute("aria-label", naming.label);
+    } else {
+      entry.menu.removeAttribute("aria-label");
+    }
+    var existing = entry.menu.children;
+    while (existing.length > entry.select.options.length) {
+      entry.menu.removeChild(existing[existing.length - 1]);
+    }
+    for (var i = 0; i < entry.select.options.length; i++) {
+      var source = entry.select.options[i];
+      var option = existing[i];
+      if (!option) {
+        option = doc.createElement("button");
+        option.type = "button";
+        option.tabIndex = -1;
+        option.setAttribute("role", "option");
+        option.addEventListener("mousedown", function (event) {
+          event.preventDefault();
+        });
+        option.addEventListener("mouseenter", function (event) {
+          var index = Number(event.currentTarget.getAttribute("data-index"));
+          if (!event.currentTarget.disabled && entry.highlight !== index) {
+            entry.highlight = index;
+            paintOptions(entry);
+          }
+        });
+        option.addEventListener("click", function (event) {
+          commit(entry, Number(event.currentTarget.getAttribute("data-index")));
+        });
+        entry.menu.appendChild(option);
+      }
+      option.className = "cpa-select-option";
+      option.id = entry.listId + "-option-" + i;
+      option.setAttribute("data-index", String(i));
+      option.textContent = source.textContent || source.label || "";
+      option.disabled = optionDisabled(source);
+      if (i === entry.select.selectedIndex) {
+        option.className += " is-selected";
+        option.setAttribute("aria-selected", "true");
+      } else {
+        option.setAttribute("aria-selected", "false");
+      }
+      if (i === entry.highlight) {
+        option.className += " is-highlighted";
+      }
+    }
+    if (entry.highlight >= 0) {
+      entry.trigger.setAttribute("aria-activedescendant", entry.listId + "-option-" + entry.highlight);
+      var current = doc.getElementById(entry.listId + "-option-" + entry.highlight);
+      if (current) {
+        if (current.offsetTop < entry.menu.scrollTop) entry.menu.scrollTop = current.offsetTop;
+        else if (current.offsetTop + current.offsetHeight > entry.menu.scrollTop + entry.menu.clientHeight) {
+          entry.menu.scrollTop = current.offsetTop + current.offsetHeight - entry.menu.clientHeight;
+        }
+      }
+    } else {
+      entry.trigger.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  function openEntry(entry) {
+    if (!entry || entry.select.disabled) {
+      return;
+    }
+    if (active && active !== entry) {
+      closeActive(false);
+    }
+    entry.open = true;
+    entry.highlight = entry.select.selectedIndex >= 0 && !optionDisabled(entry.select.options[entry.select.selectedIndex])
+      ? entry.select.selectedIndex
+      : firstEnabled(entry.select);
+    var menu = doc.createElement("div");
+    menu.className = "cpa-select-menu";
+    menu.id = entry.listId;
+    menu.setAttribute("role", "listbox");
+    entry.menu = menu;
+    doc.body.appendChild(menu);
+    active = entry;
+    syncTrigger(entry);
+    positionMenu(entry);
+    paintOptions(entry);
+    attachGlobal();
+  }
+
+  function commit(entry, index) {
+    var option = entry.select.options[index];
+    if (!option || optionDisabled(option)) {
+      return;
+    }
+    var changed = String(entry.select.value) !== String(option.value) || entry.select.selectedIndex !== index;
+    entry.select.selectedIndex = index;
+    entry.select.value = option.value;
+    closeActive(true);
+    if (changed) {
+      entry.select.dispatchEvent(new win.Event("change", { bubbles: true }));
+    }
+  }
+
+  function onTriggerKey(entry, event) {
+    if (entry.select.disabled) {
+      return;
+    }
+    var key = event.key;
+    if (key === "ArrowDown" || key === "ArrowUp") {
+      event.preventDefault();
+      if (!entry.open) {
+        openEntry(entry);
+        return;
+      }
+      entry.highlight = stepIndex(entry.select, entry.highlight, key === "ArrowDown" ? 1 : -1);
+      paintOptions(entry);
+      positionMenu(entry);
+      return;
+    }
+    if (key === "Home" || key === "End") {
+      if (!entry.open) {
+        return;
+      }
+      event.preventDefault();
+      entry.highlight = key === "Home" ? firstEnabled(entry.select) : lastEnabled(entry.select);
+      paintOptions(entry);
+      positionMenu(entry);
+      return;
+    }
+    if (key === "Enter" || key === " ") {
+      event.preventDefault();
+      if (!entry.open) {
+        openEntry(entry);
+        return;
+      }
+      if (entry.highlight >= 0) {
+        commit(entry, entry.highlight);
+      }
+      return;
+    }
+    if (key === "Escape") {
+      if (!entry.open) {
+        return;
+      }
+      event.preventDefault();
+      if (typeof event.stopPropagation === "function") {
+        event.stopPropagation();
+      }
+      closeActive(true);
+      return;
+    }
+    if (key === "Tab" && entry.open) {
+      closeActive(false);
+    }
+  }
+
+  function mount(select) {
+    if (select.getAttribute("data-cpa-select") === "ready" && findEntry(select)) {
+      return findEntry(select);
+    }
+    var id = sourceId(select);
+    var wrap = doc.createElement("span");
+    wrap.className = "cpa-select";
+    var trigger = doc.createElement("button");
+    trigger.type = "button";
+    trigger.className = "btn cpa-select-trigger";
+    trigger.id = id + "-trigger";
+    trigger.setAttribute("role", "combobox");
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.setAttribute("aria-autocomplete", "none");
+    var text = doc.createElement("span");
+    text.className = "cpa-select-text";
+    var chevron = doc.createElement("span");
+    chevron.className = "cpa-select-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    trigger.appendChild(text);
+    trigger.appendChild(chevron);
+    var parent = select.parentNode;
+    parent.insertBefore(wrap, select);
+    wrap.appendChild(select);
+    wrap.appendChild(trigger);
+    select.classList.add("cpa-select-native");
+    select.setAttribute("data-cpa-select", "ready");
+    select.setAttribute("aria-hidden", "true");
+    select.tabIndex = -1;
+    select.addEventListener("focus", function () {
+      if (entry.trigger && typeof entry.trigger.focus === "function") {
+        entry.trigger.focus();
+      }
+    });
+    select.addEventListener("change", function () {
+      syncTrigger(entry);
+    });
+    var entry = {
+      select: select,
+      wrap: wrap,
+      trigger: trigger,
+      text: text,
+      menu: null,
+      listId: id + "-listbox",
+      open: false,
+      highlight: -1
+    };
+    trigger.addEventListener("click", function () {
+      if (entry.select.disabled) {
+        return;
+      }
+      if (entry.open) {
+        closeActive(false);
+      } else {
+        openEntry(entry);
+      }
+    });
+    trigger.addEventListener("keydown", function (event) {
+      onTriggerKey(entry, event);
+    });
+    entries.push(entry);
+    syncTrigger(entry);
+    return entry;
+  }
+
+  function detachGlobal() {
+    if (outsideHandler) {
+      doc.removeEventListener("mousedown", outsideHandler, true);
+      try {
+        if (win.parent && win.parent !== win) win.parent.removeEventListener("mousedown", outsideHandler, true);
+      } catch (err) { /* Cross-origin parent events are unavailable. */ }
+      outsideHandler = null;
+    }
+    if (viewportHandler) {
+      win.removeEventListener("resize", viewportHandler);
+      win.removeEventListener("scroll", viewportHandler, true);
+      viewportHandler = null;
+    }
+    if (parentViewportHandler) {
+      try {
+        if (win.parent && win.parent !== win) {
+          win.parent.removeEventListener("resize", parentViewportHandler);
+          win.parent.removeEventListener("scroll", parentViewportHandler, true);
+        }
+      } catch (err) {
+        // A cross-origin parent cannot be unbound; nothing was bound either.
+      }
+      parentViewportHandler = null;
+    }
+    if (rafId !== null && typeof win.cancelAnimationFrame === "function") {
+      win.cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  }
+
+  function attachGlobal() {
+    if (!outsideHandler) {
+      outsideHandler = function (event) {
+        if (!active) {
+          return;
+        }
+        var target = event.target;
+        if (active.wrap && active.wrap.contains && active.wrap.contains(target)) {
+          return;
+        }
+        if (active.menu && active.menu.contains && active.menu.contains(target)) {
+          return;
+        }
+        closeActive(false);
+      };
+      doc.addEventListener("mousedown", outsideHandler, true);
+      try {
+        if (win.parent && win.parent !== win) win.parent.addEventListener("mousedown", outsideHandler, true);
+      } catch (err) { /* Cross-origin parent events are unavailable. */ }
+    }
+    if (!viewportHandler) {
+      viewportHandler = function () {
+        if (!active) {
+          return;
+        }
+        if (typeof win.requestAnimationFrame !== "function") {
+          positionMenu(active);
+          return;
+        }
+        if (rafId !== null) {
+          win.cancelAnimationFrame(rafId);
+        }
+        rafId = win.requestAnimationFrame(function () {
+          rafId = null;
+          if (active) {
+            positionMenu(active);
+          }
+        });
+      };
+      win.addEventListener("resize", viewportHandler);
+      win.addEventListener("scroll", viewportHandler, true);
+    }
+    if (!parentViewportHandler && win.parent && win.parent !== win) {
+      parentViewportHandler = function () {
+        closeActive(false);
+      };
+      try {
+        win.parent.addEventListener("resize", parentViewportHandler);
+        win.parent.addEventListener("scroll", parentViewportHandler, true);
+      } catch (err) {
+        parentViewportHandler = null;
+      }
+    }
+  }
+
+  function refresh() {
+    var live = [];
+    var selects = doc.querySelectorAll ? doc.querySelectorAll("select") : [];
+    for (var i = 0; i < selects.length; i++) {
+      if (isSelect(selects[i]) && doc.body && doc.body.contains(selects[i])) {
+        live.push(mount(selects[i]));
+      }
+    }
+    for (var j = entries.length - 1; j >= 0; j--) {
+      var entry = entries[j];
+      if (live.indexOf(entry) >= 0) {
+        if (entry.open && entry.select.disabled) {
+          closeActive(false);
+        }
+        syncTrigger(entry);
+        if (entry.open && entry.menu) {
+          paintOptions(entry);
+          positionMenu(entry);
+        }
+        continue;
+      }
+      if (active === entry) {
+        closeActive(false);
+      }
+      if (entry.menu && entry.menu.parentNode) {
+        entry.menu.parentNode.removeChild(entry.menu);
+      }
+      if (entry.wrap && entry.wrap.parentNode) entry.wrap.parentNode.removeChild(entry.wrap);
+      if (entry.select && entry.select.classList) {
+        entry.select.classList.remove("cpa-select-native");
+      }
+      entries.splice(j, 1);
+    }
+  }
+
+  return { refresh: refresh };
 }
 
 /* ---------------------------------------------------------------- DOM wiring */
@@ -745,6 +1316,11 @@ function initUi() {
   var modelSave = doc.getElementById("manual-model-save");
   var modelReload = doc.getElementById("manual-model-reload");
   var modelAdd = doc.getElementById("manual-model-add");
+  var selectController = createSelectController(window, doc);
+
+  function syncSelects() {
+    selectController.refresh();
+  }
 
   function setStatus(message, level) {
     el.status.textContent = message;
@@ -795,6 +1371,7 @@ function initUi() {
       }
       actionButtons[i].disabled = blocked;
     }
+    syncSelects();
   }
 
   function applySecurityGate() {
@@ -810,6 +1387,7 @@ function initUi() {
     } else {
       setStatus("当前环境不安全，已禁用密钥操作。请改用 HTTPS 或本机地址访问。", "error");
     }
+    syncSelects();
   }
 
   function disconnect() {
@@ -1264,6 +1842,7 @@ function initUi() {
       key = "";
       window.clearTimeout(timer);
       setBusy(false);
+      syncSelects();
     }
   }
 
@@ -1334,7 +1913,12 @@ function initUi() {
   modelReload.addEventListener("click", loadManualModels);
   el.mgmtKey.addEventListener("input", function () {
     manualDraft = []; modelsLoaded = false; modelsDirty = false;
+    if (modelProtocol) {
+      modelProtocol.selectedIndex = 0;
+      modelProtocol.value = "";
+    }
     renderManualModels(); setBusy(busy);
+    syncSelects();
   });
   el.importForm.addEventListener("submit", function (event) {
     event.preventDefault();
@@ -1345,6 +1929,7 @@ function initUi() {
   });
 
   applySecurityGate();
+  syncSelects();
   if (secureContext) {
     setStatus("尚未加载。请输入 CPA 管理密钥并点击“连接并刷新”。", "info");
   }

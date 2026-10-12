@@ -74,14 +74,21 @@ It validates:
 - an empty catalog renders one spanning placeholder row;
 - every live button (connect / import / save primary, reload / add / discard
   secondary, quota secondary-small, credential and draft-row delete
-  danger-small) carries `.btn` with one semantic variant and the shared 46px /
-  39px dimensions, hover, disabled and keyboard-focus treatment;
+  danger-small) carries `.btn` with one semantic variant and the shared 34px /
+  28px dimensions, hover, disabled and keyboard-focus treatment;
+- the protocol select stays a native value source and opens one body-level
+  listbox for click, keyboard, disabled and dynamic option changes. The compact
+  trigger is presentation only: disabling JavaScript leaves the original native
+  select, its id and its label association intact;
 - the `step-5-preview-free` / `openai` row centers its text on the shared small
   delete control, a long id genuinely wraps (multiple line boxes), and the add
   button shares the input/select bottom edge;
-- all live button styles are checked in light / white / dark at 1280px and
+- all live button styles are checked in light / white / dark at 1280px, 768px and
   390px; screenshots include desktop close-ups and full mobile pages with
   transitions settled (`animations: 'disabled'`);
+- a long same-origin iframe keeps the dropdown within the parent-visible
+  viewport and dismisses it on parent outside clicks; coarse pointers retain
+  44px touch targets;
 - the 390px viewport keeps the wide draft table scrolling inside its wrapper
   (table-internal scroll) without page-level horizontal overflow, and no browser
   exception is raised.

@@ -320,9 +320,9 @@ test("all buttons use the shared .btn contract instead of type/table-specific st
   // The frozen shared base and semantic variants are present verbatim.
   const base = rule(".btn");
   for (const declaration of [
-    "display: inline-flex", "gap: 8px", "padding: 10px 14px",
+    "display: inline-flex", "gap: 8px", "min-height: 34px", "padding: 6px 12px",
     "border: 1px solid transparent", "background-color: var(--bg-secondary)",
-    "font-size: 16px", "font-weight: 600", "line-height: 1.5", "white-space: nowrap"
+    "font-size: 13px", "font-weight: 600", "line-height: 20px", "white-space: nowrap"
   ]) {
     assert.ok(base.includes(declaration), "`.btn` must declare " + declaration);
   }
@@ -331,8 +331,10 @@ test("all buttons use the shared .btn contract instead of type/table-specific st
   assert.match(rule(".btn-ghost"), /background-color:\s*transparent/);
   assert.match(rule(".btn-danger"), /background-color:\s*var\(--error-color\)/);
   const small = rule(".btn-sm");
-  assert.match(small, /padding:\s*8px 10px/);
-  assert.match(small, /font-size:\s*14px/);
+  assert.match(small, /min-height:\s*28px/);
+  assert.match(small, /padding:\s*3px 9px/);
+  assert.match(small, /font-size:\s*12px/);
+  assert.match(small, /line-height:\s*20px/);
   assert.match(rule(".btn:disabled"), /opacity:\s*0\.6/);
   assert.match(rule(".btn:focus-visible"), /outline:\s*2px solid var\(--text-primary\)/);
   // No presentation coupling to the button type, the legacy .danger class or
@@ -373,8 +375,16 @@ test("all buttons use the shared .btn contract instead of type/table-specific st
   assert.match(rule("th,\ntd"), /vertical-align:\s*top/);
   assert.match(rule(".manual-model-table td"), /vertical-align:\s*middle/);
   assert.match(rule(".model-fields .field"), /margin:\s*0/);
-  assert.match(rule(".model-fields"), /margin:\s*0\.75rem 0/);
+  assert.match(rule(".model-fields"), /margin:\s*12px 0/);
   assert.match(rule(".model-fields select"), /font:\s*inherit/);
+  assert.match(rule("body"), /font-size:\s*14px/);
+  assert.match(rule("h1"), /font-size:\s*20px/);
+  assert.match(rule("h2"), /font-size:\s*16px/);
+  assert.match(rule(".card"), /padding:\s*16px/);
+  assert.match(js, /function createSelectController\(win, doc\)/);
+  assert.match(js, /api\.createSelectController = createSelectController/);
+  assert.match(js, /selectController\.refresh\(\)/);
+  assert.doesNotMatch(js, /new MutationObserver\(function \(mutations\) \{\s*select/);
 });
 
 // Run the actual form handler, not only the exported pure helpers.
@@ -1170,4 +1180,183 @@ test("manual model management endpoints preserve the proxy prefix", () => {
   for (const field of ["settings", "validate", "config"]) {
     assert.equal(urls[field + "Url"], "/proxy/v0/management/plugins/" + ui.PLUGIN_ID + "/" + field);
   }
+});
+
+// The enhanced menu is presentation only: the native select remains the value,
+// option list and change source, including after refresh and removal.
+test("createSelectController mirrors the native select without extra changes", () => {
+  const elements = new Map();
+  const listeners = [];
+  const body = {
+    children: [],
+    contains(node) { return this.children.includes(node) || node === select; },
+    insertBefore(node, reference) {
+      const index = this.children.indexOf(reference);
+      if (index < 0) this.children.push(node);
+      else this.children.splice(index, 0, node);
+      node.parentNode = this;
+    },
+    appendChild(node) { this.children.push(node); node.parentNode = this; },
+    removeChild(node) {
+      this.children = this.children.filter((child) => child !== node);
+      node.parentNode = null;
+    }
+  };
+  function node(tag) {
+    return {
+      tagName: tag.toUpperCase(),
+      id: "",
+      className: "",
+      classList: {
+        add() {},
+        remove() {},
+        contains() { return false; }
+      },
+      disabled: false,
+      value: "",
+      selectedIndex: 0,
+      tabIndex: 0,
+      title: "",
+      textContent: "",
+      parentNode: null,
+      children: [],
+      get firstChild() { return this.children[0] || null; },
+      options: [],
+      attributes: {},
+      handlers: {},
+      events: {},
+      style: {},
+      ownerDocument: null,
+      setAttribute(name, value) { this.attributes[name] = value; },
+      getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null; },
+      removeAttribute(name) { delete this.attributes[name]; },
+      appendChild(child) { this.children.push(child); child.parentNode = this; },
+      insertBefore(child, reference) {
+        const index = this.children.indexOf(reference);
+        if (index < 0) this.children.push(child);
+        else this.children.splice(index, 0, child);
+        child.parentNode = this;
+      },
+      removeChild(child) {
+        this.children = this.children.filter((item) => item !== child);
+        child.parentNode = null;
+      },
+      contains(target) { return this === target || this.children.some((child) => child.contains ? child.contains(target) : child === target); },
+      addEventListener(type, handler) {
+        this.handlers[type] = handler;
+        (this.events[type] ||= []).push(handler);
+      },
+      dispatchEvent(event) {
+        const type = event && event.type ? event.type : "";
+        for (const handler of this.events[type] || []) handler.call(this, event);
+      },
+      focus() { this.focused = true; },
+      getBoundingClientRect() { return { top: 20, bottom: 54, left: 12, width: 180, height: 34 }; },
+      querySelector() { return null; }
+    };
+  }
+  const doc = {
+    body,
+    listeners: {},
+    createElement: node,
+    getElementById(id) {
+      return elements.get(id) || null;
+    },
+    querySelector(selector) {
+      const match = selector.match(/label\[for="([^"]+)"\]/);
+      return match ? elements.get(match[1] + "-label") || null : null;
+    },
+    querySelectorAll(selector) {
+      return selector === "select" ? [select] : [];
+    },
+    addEventListener(type, handler) { this.listeners[type] = handler; listeners.push(type); },
+    removeEventListener(type) { delete this.listeners[type]; }
+  };
+  const select = node("select");
+  select.id = "manual-model-protocol";
+  select.ownerDocument = doc;
+  select.options = [
+    { value: "", textContent: "全部", disabled: false, parentNode: null },
+    { value: "openai", textContent: "OpenAI <b>x</b>", disabled: false, parentNode: null },
+    { value: "claude", textContent: "Claude", disabled: false, parentNode: null },
+    { value: "retired", textContent: "Retired", disabled: true, parentNode: null }
+  ];
+  Object.defineProperty(select, "value", {
+    get() { return this.options[this.selectedIndex] ? this.options[this.selectedIndex].value : ""; },
+    set(value) {
+      const index = this.options.findIndex((option) => option.value === value);
+      if (index >= 0) this.selectedIndex = index;
+    }
+  });
+  const label = node("label");
+  label.id = "manual-model-protocol-label";
+  select.labels = [label];
+  elements.set(label.id, label);
+  elements.set(select.id, select);
+  body.children.push(select);
+  select.parentNode = body;
+  const changes = [];
+  const win = {
+    Event: class Event { constructor(type) { this.type = type; } },
+    innerWidth: 800,
+    innerHeight: 600,
+    addEventListener() {},
+    removeEventListener() {},
+    requestAnimationFrame(callback) { callback(); return 1; },
+    cancelAnimationFrame() {}
+  };
+  const controller = ui.createSelectController(win, doc);
+  controller.refresh();
+  const mounted = select.parentNode.children.find((child) => child.tagName === "SELECT");
+  mounted.addEventListener("change", () => changes.push(mounted.value));
+  const trigger = select.parentNode.children.find((child) => child.tagName === "BUTTON");
+  assert.equal(trigger.getAttribute("role"), "combobox");
+  assert.equal(trigger.getAttribute("aria-haspopup"), "listbox");
+  assert.equal(trigger.getAttribute("aria-labelledby"), label.id);
+  assert.equal(select.getAttribute("aria-hidden"), "true");
+  assert.equal(select.tabIndex, -1);
+  select.handlers.focus();
+  assert.equal(trigger.focused, true);
+  select.value = "openai";
+  select.selectedIndex = 1;
+  select.dispatchEvent({ type: "change" });
+  assert.equal(trigger.children[0].textContent, "OpenAI <b>x</b>");
+  assert.deepEqual(changes, ["openai"]);
+  changes.length = 0;
+  trigger.handlers.click({ preventDefault() {} });
+  const menu = body.children.find((child) => child.className === "cpa-select-menu");
+  assert.ok(menu, "popup is mounted on the body");
+  assert.equal(menu.children.length, 4);
+  assert.equal(menu.children[1].textContent, "OpenAI <b>x</b>");
+  assert.equal(menu.children[1].tabIndex, -1);
+  assert.equal(menu.children[1].children.length, 0);
+  trigger.handlers.keydown({ key: "ArrowDown", preventDefault() {} });
+  assert.equal(select.value, "openai", "highlighting does not commit");
+  assert.deepEqual(changes, []);
+  menu.children[2].handlers.click({ currentTarget: menu.children[2], preventDefault() {} });
+  assert.equal(select.value, "claude");
+  assert.deepEqual(changes, ["claude"]);
+  assert.equal(trigger.children[0].textContent, "Claude");
+  assert.equal(body.children.some((child) => child.className === "cpa-select-menu"), false);
+  trigger.handlers.click({ preventDefault() {} });
+  trigger.handlers.keydown({ key: "Escape", preventDefault() {}, stopPropagation() {} });
+  assert.equal(select.value, "claude");
+  assert.equal(changes.length, 1);
+  assert.equal(trigger.focused, true);
+  select.disabled = true;
+  controller.refresh();
+  assert.equal(trigger.disabled, true);
+  trigger.handlers.click({ preventDefault() {} });
+  assert.equal(body.children.some((child) => child.className === "cpa-select-menu"), false);
+  select.disabled = false;
+  select.options.pop();
+  controller.refresh();
+  trigger.handlers.click({ preventDefault() {} });
+  const reopened = body.children.find((child) => child.className === "cpa-select-menu");
+  assert.equal(reopened.children.length, 3);
+  doc.querySelectorAll = () => [];
+  controller.refresh();
+  controller.refresh();
+  assert.equal(body.children.some((child) => child.className === "cpa-select-menu"), false);
+  assert.equal(doc.listeners.mousedown, undefined);
 });

@@ -15,8 +15,8 @@ const LONG_ID = 'opencode-go/' + 'wrapped-model-identifier-'.repeat(5) + 'end';
 // Shared token contract: computed body background per theme.
 const THEME_BG = { light: 'rgb(250, 249, 245)', white: 'rgb(255, 255, 255)', dark: 'rgb(21, 20, 18)' };
 const SECONDARY_BG = { light: 'rgb(233, 230, 223)', white: 'rgb(246, 246, 246)', dark: 'rgb(38, 35, 32)' };
-// Normal controls are 46px high; small controls are 39px high.
-const BUTTON_HEIGHT = { normal: 46, small: 39 };
+// Regular controls are 34px high; compact row controls are 28px high.
+const BUTTON_HEIGHT = { normal: 34, small: 28 };
 const SEMANTICS = ['btn-primary', 'btn-secondary', 'btn-danger', 'btn-ghost'];
 
 async function readManualGeometry(page) {
@@ -55,14 +55,16 @@ async function readManualGeometry(page) {
     });
     const input = document.querySelector('#manual-model-id');
     const select = document.querySelector('#manual-model-protocol');
+    const trigger = document.querySelector('#manual-model-protocol-trigger');
     const add = document.querySelector('#manual-model-add');
+    const selectBox = trigger ? box(trigger) : box(select);
     return {
       rows,
       input: box(input),
-      select: box(select),
+      select: selectBox,
       addButton: box(add),
       inputFont: getComputedStyle(input).fontSize,
-      selectFont: getComputedStyle(select).fontSize
+      selectFont: getComputedStyle(trigger || select).fontSize
     };
   });
 }
@@ -95,7 +97,9 @@ function assertControlAlignment(label, geometry) {
 async function readButtons(page) {
   return page.evaluate(() => {
     const round = (value) => Math.round(value * 100) / 100;
-    return Array.from(document.querySelectorAll('button')).map((button) => {
+    return Array.from(document.querySelectorAll('button')).filter((button) => {
+      return !button.classList.contains('cpa-select-trigger') && !button.classList.contains('cpa-select-option');
+    }).map((button) => {
       const style = getComputedStyle(button);
       return {
         id: button.id || '',
@@ -130,7 +134,7 @@ function assertButtonContract(label, buttons, theme = 'white') {
     const small = button.classes.includes('btn-sm');
     const want = small ? BUTTON_HEIGHT.small : BUTTON_HEIGHT.normal;
     assert.ok(Math.abs(button.height - want) <= 1, where + ' height ' + button.height + ' != ' + want);
-    assert.equal(button.fontSize, small ? '14px' : '16px', where + ' font-size');
+    assert.equal(button.fontSize, small ? '12px' : '13px', where + ' font-size');
     assert.equal(button.fontWeight, '600', where + ' font-weight');
     assert.equal(button.borderRadius, '8px', where + ' radius');
     assert.equal(button.whiteSpace, 'nowrap', where + ' white-space');
@@ -148,9 +152,30 @@ function assertButtonContract(label, buttons, theme = 'white') {
   }
 }
 
+async function chooseProtocol(page, protocol) {
+  const select = page.locator('#manual-model-protocol');
+  const trigger = page.locator('#manual-model-protocol-trigger');
+  if (await trigger.count()) {
+    await trigger.click();
+    const menu = page.locator('#manual-model-protocol-listbox');
+    await menu.waitFor({ state: 'visible' });
+    const index = await select.evaluate((node, value) => {
+      return Array.from(node.options).findIndex((option) => option.value === value);
+    }, protocol);
+    assert.ok(index >= 0, 'missing protocol option ' + protocol);
+    const before = await select.inputValue();
+    await menu.locator('[role="option"][data-index="' + index + '"]').click();
+    await menu.waitFor({ state: 'hidden' });
+    assert.equal(await select.inputValue(), protocol);
+    return before !== protocol;
+  }
+  await select.selectOption(protocol);
+  return true;
+}
+
 async function addManualRow(page, id, protocol) {
   await page.locator('#manual-model-id').fill(id);
-  await page.locator('#manual-model-protocol').selectOption(protocol);
+  await chooseProtocol(page, protocol);
   await page.locator('#manual-model-add').click();
 }
 
@@ -178,6 +203,18 @@ async function main() {
   fs.mkdirSync(out, { recursive: true });
   const policy = fs.readFileSync(path.resolve(web, '../provider/management.go'), 'utf8').match(/headers.Set\("Content-Security-Policy", "([^"]+)"\)/)[1];
   const server = http.createServer((req, res) => {
+    if (req.url === '/embed') {
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<!doctype html><html><head><link rel="stylesheet" href="/embed.css"></head><body>' +
+        '<header>CPA 本地验证宿主</header><iframe title="OpenCode" src="/proxy/v0/resource/plugins/' + plugin + '/ui"></iframe></body></html>');
+      return;
+    }
+    if (req.url === '/embed.css') {
+      res.setHeader('Content-Type', 'text/css');
+      res.end(fs.readFileSync(path.join(web, 'ui.css'), 'utf8') +
+        '\nbody{padding:0}header{height:48px;padding:12px}iframe{display:block;width:100%;height:4200px;border:0}');
+      return;
+    }
     const name = req.url.endsWith('/ui') ? 'ui.html' : path.basename(req.url);
     if (!['ui.html', 'ui.js', 'ui.css'].includes(name)) { res.writeHead(404).end(); return; }
     res.writeHead(200, { 'Content-Type': name.endsWith('.js') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : 'text/html', 'Content-Security-Policy': policy });
@@ -246,11 +283,11 @@ async function main() {
     await page.locator('#manual-model-id').fill('novel');
     await page.locator('#manual-model-add').click();
     assert.match(await page.locator('#manual-model-status').textContent(), /未知模型族/);
-    await page.locator('#manual-model-protocol').selectOption('claude');
+    await chooseProtocol(page, 'claude');
     await page.locator('#manual-model-add').click();
     assert.match(await page.locator('#manual-model-body').textContent(), /novel/);
     await page.locator('#manual-model-id').fill('opencode-go/glm-5.2');
-    await page.locator('#manual-model-protocol').selectOption('');
+    await chooseProtocol(page, '');
     await page.locator('#manual-model-add').click();
     results.push('add native/namespaced IDs and validate unknown protocols');
 
@@ -331,7 +368,7 @@ async function main() {
       await page.keyboard.press('Tab');
       focus = await page.evaluate(() => {
         const el = document.activeElement;
-        if (!el || el.tagName !== 'BUTTON') return null;
+        if (!el || el.tagName !== 'BUTTON' || el.classList.contains('cpa-select-trigger')) return null;
         const style = getComputedStyle(el);
         return {
           label: el.textContent,
@@ -361,9 +398,102 @@ async function main() {
     // Leave the pointer off the buttons so screenshots never show hover state.
     await page.mouse.move(0, 0);
 
+    // The enhanced select keeps the native control as the value source and uses
+    // one body-level popup for pointer and keyboard operation.
+    await page.evaluate(() => {
+      const select = document.getElementById('manual-model-protocol');
+      const option = document.createElement('option');
+      option.value = 'retired';
+      option.textContent = 'Retired <b>protocol</b>';
+      option.disabled = true;
+      select.appendChild(option);
+    });
+    await page.locator('#manual-model-reload').click();
+    await page.waitForFunction(() => document.getElementById('manual-model-status').textContent.includes('已加载'));
+    const trigger = page.locator('#manual-model-protocol-trigger');
+    const native = page.locator('#manual-model-protocol');
+    const changes = [];
+    await page.exposeFunction('__recordProtocolChange', (value) => { changes.push(value); }).catch(() => {});
+    await page.evaluate(() => {
+      const select = document.getElementById('manual-model-protocol');
+      select.addEventListener('change', () => window.__recordProtocolChange(select.value));
+    });
+    await trigger.click();
+    const menu = page.locator('#manual-model-protocol-listbox');
+    await menu.waitFor({ state: 'visible' });
+    const menuParent = await menu.evaluate((node) => node.parentElement === document.body && getComputedStyle(node).position === 'fixed');
+    assert.equal(menuParent, true, 'menu must be a body-level fixed popup');
+    assert.equal(await menu.locator('[role="option"]').count(), 5);
+    assert.equal(await menu.locator('b').count(), 0, 'option markup must stay text');
+    assert.match(await menu.locator('[role="option"]').last().textContent(), /Retired <b>protocol<\/b>/);
+    assert.equal(await menu.locator('[role="option"]').last().isDisabled(), true);
+    const valueBeforeHighlight = await native.inputValue();
+    await trigger.press('ArrowDown');
+    assert.equal(await native.inputValue(), valueBeforeHighlight, 'highlighting must not change the native value');
+    assert.equal(changes.length, 0, 'opening or highlighting must not dispatch change');
+    await trigger.press('Enter');
+    await menu.waitFor({ state: 'hidden' });
+    const nextEnabled = await native.evaluate((node, current) => {
+      const values = Array.from(node.options).filter((option) => !option.disabled).map((option) => option.value);
+      const index = values.indexOf(current);
+      return values[(index + 1) % values.length];
+    }, valueBeforeHighlight);
+    assert.equal(await native.inputValue(), nextEnabled);
+    assert.deepEqual(changes, [nextEnabled]);
+    await trigger.press('ArrowDown');
+    await menu.waitFor({ state: 'visible' });
+    await trigger.press('End');
+    await trigger.press('Enter');
+    await menu.waitFor({ state: 'hidden' });
+    assert.equal(await native.inputValue(), 'openai-response');
+    await trigger.press('ArrowDown');
+    await menu.waitFor({ state: 'visible' });
+    await trigger.press('ArrowUp');
+    await trigger.press('Enter');
+    await menu.waitFor({ state: 'hidden' });
+    assert.equal(await native.inputValue(), 'claude');
+    await trigger.press(' ');
+    await menu.waitFor({ state: 'visible' });
+    await trigger.press('Escape');
+    await menu.waitFor({ state: 'hidden' });
+    assert.equal(await native.inputValue(), 'claude', 'escape cancels without committing');
+    assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.id), 'manual-model-protocol-trigger');
+    await trigger.press('Enter');
+    await menu.waitFor({ state: 'visible' });
+    await page.keyboard.press('Tab');
+    await menu.waitFor({ state: 'hidden' });
+    assert.notEqual(await page.evaluate(() => document.activeElement && document.activeElement.id), 'manual-model-protocol-trigger');
+    await trigger.click();
+    await menu.waitFor({ state: 'visible' });
+    await page.locator('#manual-model-id').click();
+    await menu.waitFor({ state: 'hidden' });
+    const disabledDuringLoad = page.waitForFunction(() => {
+      const node = document.getElementById('manual-model-protocol-trigger');
+      return node && node.disabled && !document.getElementById('manual-model-protocol-listbox');
+    });
+    await page.locator('#manual-model-reload').click();
+    await disabledDuringLoad;
+    await page.waitForFunction(() => document.getElementById('manual-model-status').textContent.includes('已加载'));
+    assert.equal(await trigger.isDisabled(), false);
+    await page.evaluate(() => {
+      const retired = document.querySelector('#manual-model-protocol option[value="retired"]');
+      if (retired) retired.remove();
+      document.getElementById('manual-model-protocol').value = '';
+    });
+    await page.locator('#manual-model-reload').click();
+    await page.waitForFunction(() => document.getElementById('manual-model-status').textContent.includes('已加载'));
+    results.push('custom select click, keyboard, disabled and dynamic options');
+    await addManualRow(page, MANUAL_ID, 'openai');
+    await addManualRow(page, LONG_ID, 'claude');
+
     // Light / white / dark close-ups of the manual editor at desktop width.
     for (const theme of ['light', 'white', 'dark']) {
+      await page.mouse.move(0, 0);
       await setPageTheme(page, theme);
+      await page.waitForFunction(() => {
+        const button = document.getElementById('manual-model-add');
+        return button && !button.matches(':hover');
+      });
       const themedButtons = await readButtons(page);
       assertButtonContract('desktop ' + theme, themedButtons, theme);
       evidence.themes.desktop[theme] = themedButtons;
@@ -406,6 +536,47 @@ async function main() {
     await page.screenshot({ path: path.join(out, 'manual-models-390.png'), fullPage: true, animations: 'disabled' });
     results.push('all live buttons follow the shared contract in three desktop/mobile themes');
     results.push('mobile keeps table-internal scroll without page overflow');
+    await page.setViewportSize({ width: 768, height: 900 });
+    for (const theme of ['light', 'white', 'dark']) {
+      await setPageTheme(page, theme);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+      assertButtonContract('tablet ' + theme, await readButtons(page), theme);
+      await trigger.click();
+      await menu.waitFor({ state: 'visible' });
+      const visible = await menu.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.left >= 8 && rect.right <= window.innerWidth - 8 && rect.bottom <= window.innerHeight - 8;
+      });
+      assert.equal(visible, true, 'tablet menu remains within the viewport');
+      await page.screenshot({ path: path.join(out, 'manual-models-' + theme + '-768.png'), animations: 'disabled' });
+      await trigger.press('Escape');
+    }
+    results.push('three tablet themes keep compact controls and a viewport-contained dropdown');
+    await page.goto(origin + '/embed');
+    const frame = page.frameLocator('iframe');
+    await frame.locator('#mgmt-key').fill(secret);
+    await frame.locator('#refresh-btn').click();
+    await frame.locator('#manual-model-status').filter({ hasText: '已加载' }).waitFor();
+    for (const width of [1280, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await frame.locator('#manual-model-protocol-trigger').click();
+      const iframeMenu = frame.locator('.cpa-select-menu');
+      const box = await iframeMenu.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        const frameRect = window.frameElement.getBoundingClientRect();
+        return { bottom: rect.bottom, limit: window.parent.innerHeight - frameRect.top };
+      });
+      assert.ok(box.bottom <= box.limit - 7, 'menu must stay in the parent-visible iframe viewport');
+      await page.screenshot({ path: path.join(out, 'iframe-dropdown-' + width + '.png'), animations: 'disabled' });
+      await page.mouse.click(8, 8);
+      await iframeMenu.waitFor({ state: 'hidden' });
+    }
+    const touch = await browser.newContext({ viewport: { width: 390, height: 900 }, hasTouch: true });
+    const touchPage = await touch.newPage();
+    await touchPage.goto(origin + '/proxy/v0/resource/plugins/' + plugin + '/ui');
+    assert.ok(await touchPage.locator('#manual-model-protocol-trigger').evaluate((el) => el.getBoundingClientRect().height >= 44));
+    await touch.close();
+    results.push('iframe geometry, parent outside dismissal and 44px coarse-pointer targets');
     assert.deepEqual(errors, []);
     results.push('no browser exceptions');
   } finally {
